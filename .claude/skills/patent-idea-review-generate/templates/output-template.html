@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{专利IDEA名称} - 专利评审材料</title>
+<!-- 浏览器打开本文件即可自动渲染 Mermaid 图表（需联网加载 CDN） -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f0f2f5; color: #1f2329; padding: 24px; line-height: 1.6;
+  }
+  /* 每页 = 一张 PPT 素材卡片，按页拆分复制 */
+  .slide {
+    background: #fff; max-width: 1120px; margin: 0 auto 24px;
+    padding: 40px 48px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08); page-break-after: always;
+  }
+  .slide h1 { font-size: 28px; margin-bottom: 8px; color: #0e5fd8; }
+  .slide h2 { font-size: 22px; margin-bottom: 16px; }
+  .slide h3 { font-size: 18px; margin: 16px 0 8px; }
+  .part-tag {
+    display: inline-block; font-size: 13px; color: #fff; background: #0e5fd8;
+    border-radius: 4px; padding: 2px 10px; margin-bottom: 12px;
+  }
+  .subtitle { color: #6b737c; font-size: 13px; }
+  /* 左图右文布局（整页配图页使用） */
+  .img-text { display: flex; gap: 32px; align-items: flex-start; }
+  .img-text .figure { flex: 1.2; min-width: 0; }
+  .img-text .text { flex: 1; }
+  .img-text .text li { margin: 8px 0; line-height: 1.7; }
+  /* 表格样式 */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #d5d9e0; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f2f6ff; }
+  .caption { color: #6b737c; font-size: 13px; margin-top: 6px; }
+  .page-break-hint { text-align: center; color: #b3bac3; font-size: 12px; margin: -12px auto 24px; max-width: 1120px; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ 封面页 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">封面</div>
+  <h1>{专利IDEA名称}</h1>
+  <p class="subtitle">专利IDEA评审材料</p>
+  <p style="margin-top:24px; font-size:16px;">{一句话核心定位：面向什么问题、以什么核心手段、达成什么效果}</p>
+</section>
+
+<!-- ═══════════════ Part 1：发明背景和现有技术（2~3页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-1 问题领域宏观背景</h2>
+  <p>{问题产生根源：行业痛点/技术瓶颈/业务需求，≤150字}</p>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-2 现有技术对比与缺陷</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术</th><th>出处/技术路线</th><th>核心机制</th><th>具体缺陷与不足</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>{技术1}</td><td>{出处}</td><td>{一句话简述}</td><td>{具体缺陷}</td></tr>
+      <tr><td>{技术2}</td><td>{出处}</td><td>{一句话简述}</td><td>{具体缺陷}</td></tr>
+    </tbody>
+  </table>
+  <p>{缺陷总结 + 过渡引出本发明必要性，≤100字}</p>
+</section>
+
+<!-- 可选页 P1-3：技术演进趋势（左图右文，mermaid timeline/flowchart） -->
+
+<!-- ═══════════════ Part 2：本发明技术方案（3~6页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-1 总体逻辑架构</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    A[顶层模块] --> B[中层模块1]
+    A --> C[中层模块2]
+    B --> D[底层模块]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>{层次/模块划分}</li>
+        <li>{关键模块职责}</li>
+        <li>{模块间关系与数据流}</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-2 关键业务流程时序</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+sequenceDiagram
+    participant U as 角色1
+    participant S as 角色2
+    U->>S: 请求
+    S-->>U: 响应
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>{角色与触发条件}</li>
+        <li>{关键交互步骤}</li>
+        <li>{异常/回退路径}</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- 按需增加 P2-3 ~ P2-6：核心算法/数据结构/关键模块详解（每页聚焦一个要点，可复用上方 img-text 左图右文结构，mermaid 换 flowchart/classDiagram/stateDiagram） -->
+
+<!-- ═══════════════ Part 3：本发明的技术保护点（1~2页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 3 · 本发明的技术保护点</div>
+  <h2>保护点1：{名称}</h2>
+  <ol>
+    <li><strong>技术特征</strong>：{达到技术效果所依赖的具体技术特征}</li>
+    <li><strong>创新点</strong>：{区别于现有技术之处，体现新颖性/创造性}</li>
+    <li><strong>外部表现</strong>：{外部可感知特征：接口行为/交互流程/系统结构}</li>
+    <li><strong>取证手段</strong>：{抓包/逆向/功能表现等获取侵权证据的方式}</li>
+  </ol>
+  <h3>差异性总结</h3>
+  <p>{本发明与现有技术的最大技术特征差别}</p>
+</section>
+
+<!-- ═══════════════ Part 4：本发明的技术效果（1~2页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 4 · 本发明的技术效果</div>
+  <h2>问题 → 方案 → 效果 闭环</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术问题（Part1）</th><th>对应技术方案（Part2）</th><th>产生的技术效果</th><th>量化指标（如有）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>{问题1}</td><td>{对应方案/模块}</td><td>{效果}</td><td>{指标}</td></tr>
+      <tr><td>{问题2}</td><td>{对应方案/模块}</td><td>{效果}</td><td>{指标}</td></tr>
+    </tbody>
+  </table>
+  <p><strong>因果机制</strong>：{为什么该方案能产生该效果——机制说明}</p>
+</section>
+
+<!-- ═══════════════ Part 5：本发明的有益效果（1页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 5 · 本发明的有益效果</div>
+  <h2>多方视角收益</h2>
+  <table>
+    <thead>
+      <tr><th>视角</th><th>正向收益</th><th>量化预期</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>🧑 C端用户</td><td>{体验提升、效率改善等}</td><td>{如：首Token延迟降低xx%}</td></tr>
+      <tr><td>🏢 企业用户/服务提供商</td><td>{成本降低、收入增长、运营效率等}</td><td>{如：推理成本降低xx%}</td></tr>
+      <tr><td>🔧 设备提供商</td><td>{硬件适配、生态扩展等；若不适用说明原因}</td><td>{量化预期或—}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</body>
+</html>

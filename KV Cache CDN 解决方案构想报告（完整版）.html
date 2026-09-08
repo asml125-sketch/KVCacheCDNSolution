@@ -104,6 +104,7 @@
     <a class="sub" href="#s2-3">2.3 总体架构图</a>
     <a class="sub" href="#s2-4">2.4 关键流程数据流图</a>
     <a class="sub" href="#s2-5">2.5 与现有系统的关系</a>
+    <a class="sub" href="#s2-6">2.6 目录初始化与准入控制</a>
     <a href="#s3">3. 背景：为何成为 CDN 问题</a>
     <a href="#s4">4. 五个时代</a>
     <a href="#s5">5. 四轴分类学</a>
@@ -124,7 +125,7 @@
 <div class="report-hero">
   <h1>KV Cache CDN 完整解决方案构想报告</h1>
   <div class="meta">
-    <span class="chip">完整版 v1.1</span>
+    <span class="chip">完整版 v1.2</span>
     <span class="chip">2026 年 9 月</span>
     <span class="chip">解决方案构想（Solution Vision）</span>
     <span class="chip">参考文献 [P1]–[P16]</span>
@@ -300,8 +301,8 @@
   <thead><tr><th>#</th><th>部件</th><th>职责</th><th>当前可用实现</th></tr></thead>
   <tbody>
     <tr><td>①</td><td><strong>全局路由网关（Global Gateway / GSLB）</strong></td><td>请求接入；提取前缀指纹；SLA 分类（实时/异步）；基于"命中率 × 端到端时延 × 成本 × 潮汐 × 信任"加权决策；熔断与降级（fallback to local recompute）。传统 CDN 的智能 DNS + 全局负载均衡对应物</td><td>AIBrix 路由思想、GORGO</td></tr>
-    <tr><td>②</td><td><strong>KV 全局目录与索引（KV Catalog）</strong></td><td>前缀→位置映射（分布式 Radix 树 + DHT 双层）；内容寻址块 ID（哈希 = 模型 × tokenizer × 量化 × 分块内容）；元数据与版本管理；租约发放与失效广播</td><td>LMCache 内容寻址、etcd/一致性哈希</td></tr>
-    <tr><td>③</td><td><strong>潮汐调度与成本优化器（Tidal Scheduler）</strong></td><td>时区感知的 Prefill 放置（夜间闲置算力承接对侧白天峰值）；电价/算力价差套利；热点预测与主动预分发（预热）；全局 TCO 优化</td><td>PrfaaS 双时间尺度调度、Preble 联合优化 [P12]</td></tr>
+    <tr><td>②</td><td><strong>KV 全局目录与索引（KV Catalog）</strong></td><td>前缀→位置映射（分布式 Radix 树 + DHT 双层）；内容寻址块 ID（哈希 = 模型 × tokenizer × 量化 × 分块内容）；元数据与版本管理；租约发放与失效广播；冷启动影子统计与热度画像（§2.6）</td><td>LMCache 内容寻址、etcd/一致性哈希</td></tr>
+    <tr><td>③</td><td><strong>潮汐调度与成本优化器（Tidal Scheduler）</strong></td><td>时区感知的 Prefill 放置（夜间闲置算力承接对侧白天峰值）；电价/算力价差套利；热点预测与主动预分发（预热，预分发窗口由周期/区域热度统计驱动，见 §2.6）；全局 TCO 优化</td><td>PrfaaS 双时间尺度调度、Preble 联合优化 [P12]</td></tr>
     <tr><td>④</td><td><strong>信任与验证引擎（Trust Engine）</strong>（P2P 模式专属）</td><td>节点信任评分（历史行为 × 硬件画像 × 带宽实测）；蜜罐 Prompt 注入与注意力采样校验；ZKP 验证；Token 激励结算</td><td>研究前沿（§8/§10）</td></tr>
   </tbody>
 </table></div>
@@ -489,6 +490,95 @@ sequenceDiagram
 
 <h3 id="s2-5">2.5 与现有系统的关系</h3>
 <p>本方案不是推倒重来，而是现有系统的<strong>统一超集</strong>：Mooncake [P6] 是本方案的"单集群切片"（部件⑥⑩），PrfaaS [P13] 是"跨机房单向切片"（部件⑤⑨），LMCache [P16] 是最接近的开源实现（部件②⑨⑩ 的雏形），ShadowServe [P15] 补齐硬件传输层（部件⑨），Internet for KV Cache [P14] 是其纲领愿景。CDN 化的增量集中在控制平面（①②③④）与全局一致性（⑪）。</p>
+
+<h3 id="s2-6">2.6 KV 目录的初始化与热度驱动的准入控制</h3>
+<p>目录（部件②）与预分发（部件③）不能"什么都存、什么都推"：存储与带宽是稀缺资源，无差别准入会稀释命中率、抬高成本。因此引入一个数据驱动的<strong>准入控制闭环</strong>：先观察、后决策、持续再评估。它在四轴分类学（§5）上的意义是：<strong>为每类前缀动态分配 B 轴（生命周期）与 L 轴（局部性层级）坐标</strong>。</p>
+
+<h4>2.6.1 三阶段时间线</h4>
+<div class="tablewrap"><table>
+  <thead><tr><th>阶段</th><th>时间窗</th><th>目录与缓存行为</th><th>目标</th></tr></thead>
+  <tbody>
+    <tr><td><strong>阶段 0：冷启动</strong></td><td>Day 0–7（可配置）</td><td>目录以"影子模式"运行：只记录前缀指纹、业务标签、来源区域、时间戳与 SLA，<strong>不做准入、不触发预分发</strong>；请求正常执行（本地重算/回源）</td><td>无偏采样，积累三维统计</td></tr>
+    <tr><td><strong>阶段 1：准入决策</strong></td><td>Day 7（首次 + 之后每日增量）</td><td>按前缀类别聚合统计 → 计算准入评分 → 生成复用白名单与分级（L 层级 × B 生命周期）</td><td>从"全量观察"切换到"选择性缓存"</td></tr>
+    <tr><td><strong>阶段 2：稳态闭环</strong></td><td>Day 7 起持续</td><td>双时间尺度滚动统计 + 命中率反馈 → 周期性升降层与准入复审</td><td>目录与真实访问分布保持同步</td></tr>
+  </tbody>
+</table></div>
+
+<h4>2.6.2 热数据的三维统计（周期 / 区域 / 特征）</h4>
+<p>对每类前缀（按类别聚合，而非逐个前缀）统计三个维度：</p>
+<ol>
+  <li><strong>周期性（When）</strong>：按小时/星期的访问分布。识别"办公时间热"（企业 RAG）、"晚间峰值"（C 端助手）、"跨时区潮汐"（可复用潮汐调度）。用途：<strong>预分发窗口</strong>——在预期高峰前（如 T−30 min）把热前缀推到 L0/L1 边缘。</li>
+  <li><strong>区域性（Where）</strong>：各区域 POP 的访问占比。单区域热 → 副本只存本区域 POP；全局热 → 多区域副本 + 中心全量；区域错峰访问同一前缀时可"接力"复用同一副本，进一步摊薄存储。</li>
+  <li><strong>特征性（What/Who）</strong>：业务类型（系统提示词模板 / RAG 知识块 / 多轮会话 / Agent 工作流）、上下文长度分布、<strong>跨请求共享度</strong>（不同用户/会话命中同一前缀的比例）、个性化程度。<strong>共享度是准入的核心判据</strong>。</li>
+</ol>
+
+<h4>2.6.3 准入评分与决策</h4>
+<p>对每类前缀计算（均为统计周期内的期望值）：</p>
+<pre class="formula">准入评分 = 期望复用次数/天 × 单次重算成本
+          − 分级存储成本/天 − 预期传输成本/天</pre>
+<p>决策规则（阈值按业务调参）：</p>
+<ul>
+  <li>共享度 ≥ 阈值（如 ≥ 5 独立会话/天）<strong>且</strong>评分 &gt; 0 → <strong>准入</strong>：按热度分配层级（L0–L3）与生命周期（B1–B3）；</li>
+  <li>命中率高但共享度低 → 可能只是单用户重复行为，仅按 B1 会话级本地保留；</li>
+  <li>共享度 ≈ 1（纯个性化）→ <strong>拒绝准入</strong>（处置见 2.6.5）。</li>
+</ul>
+
+<h4>2.6.4 前缀分类与处置策略</h4>
+<div class="tablewrap"><table>
+  <thead><tr><th>前缀类别</th><th>统计特征</th><th>处置策略</th><th>四轴坐标</th></tr></thead>
+  <tbody>
+    <tr><td>系统提示词 / 角色模板</td><td>共享度极高、周期性强</td><td>全量准入 + 主动预分发到 L0/L1 + 长 TTL</td><td>B3 / L0–L1</td></tr>
+    <tr><td>RAG 知识库前缀</td><td>区域聚集、随知识库版本更新</td><td>准入 + 版本化存储 + 知识库变更时批量失效重算</td><td>B2–B3 / L1–L2</td></tr>
+    <tr><td>热门问题 / 公共上下文</td><td>周期 + 区域特征明显</td><td>准入 + 按周期窗口预分发</td><td>B2 / L1</td></tr>
+    <tr><td>多轮会话上下文</td><td>会话内复用、跨会话零共享</td><td>本地会话级保留，不做跨节点预分发</td><td>B1 / 本地节点</td></tr>
+    <tr><td><strong>高度个性化前缀</strong></td><td>共享度 ≈ 1、无周期无区域规律</td><td>见 2.6.5 三种处置</td><td>B0 / 不入目录</td></tr>
+  </tbody>
+</table></div>
+
+<h4>2.6.5 个性化前缀的三种处置</h4>
+<p>对"太个性化"的前缀（用户私有历史、个人记忆、一次性长文档），按成本择一：</p>
+<ol>
+  <li><strong>不存储（No-Store）</strong>：期望复用次数 ≈ 1 的前缀（如一次性长文档问答），Prefill 结果即算即焚（B0），完全不进目录——省下三级存储与目录维护开销。判断依据：历史统计显示该类前缀的复用分布集中于 1 次。</li>
+  <li><strong>不拉取（No-Fetch）</strong>：允许本地会话级保留（B1），但<strong>不进入跨节点预分发与跨机房拉取清单</strong>。个性化 KV 的传输大概率是一次性消费；按 §1.2 判据，低共享度意味着传输成本无人摊销，跨机房拉取必亏。</li>
+  <li><strong>调整更新时间（差异化 TTL / 刷新策略）</strong>：对介于冷热之间的"温数据"，不做实时保鲜：
+    <ul>
+      <li>低热前缀：短 TTL + 无命中即降层（HBM → DRAM → NVMe），到期驱逐；</li>
+      <li>中热前缀：按访问周期设定刷新点（如每个工作日高峰前统一刷新一次）；</li>
+      <li>"隔天回访"型会话上下文：<strong>延迟重算</strong>——不驻留 KV，只保留触发重算的摘要指纹，回访时按需重算，用便宜的重算替代昂贵的驻留（本质是逐前缀类别地执行 §1.2 的拉取/重算判据）。</li>
+    </ul>
+  </li>
+</ol>
+
+<h4>2.6.6 初始化与热度闭环流程图</h4>
+<pre class="mermaid">
+flowchart TB
+    subgraph P0["阶段 0：冷启动（Day 0–7，影子模式）"]
+        REQ["请求到达"] --> SHADOW["影子目录记录&lt;br/&gt;前缀指纹 · 业务标签 · 区域 · 时间戳 · SLA"]
+        SHADOW --> STATS["滚动三维统计&lt;br/&gt;周期 When / 区域 Where / 特征 What"]
+    end
+
+    subgraph P1["阶段 1：准入决策（Day 7 + 每日增量）"]
+        STATS --> SCORE["准入评分&lt;br/&gt;复用收益 − 存储成本 − 传输成本"]
+        SCORE --> GATE{"共享度与评分"}
+        GATE -->|"共享度高 · 评分 &gt; 0"| ADMIT["准入：分配 L 层级 × B 生命周期&lt;br/&gt;写入正式目录"]
+        GATE -->|"纯个性化（共享度 ≈ 1）"| NOSTORE["No-Store：B0 即算即焚&lt;br/&gt;不入目录"]
+        GATE -->|"温数据"| TUNE["差异化 TTL：&lt;br/&gt;No-Fetch / 降层 / 延迟重算"]
+    end
+
+    subgraph P2["阶段 2：稳态闭环（Day 7 起）"]
+        ADMIT --> SERVE["正常服务：命中 → 拉取 → Decode"]
+        SERVE --> FEED["双时间尺度反馈&lt;br/&gt;7 天滑动窗口 + 24h 快窗"]
+        FEED -->|"热度上升"| UP["升层 + 周期窗口预分发&lt;br/&gt;（高峰前 T−30min）"]
+        FEED -->|"热度下降"| DOWN["降层 / 成本加权驱逐&lt;br/&gt;或改判 No-Store"]
+        FEED -->|"新前缀模式"| STATS
+        UP --> SERVE
+        DOWN --> SERVE
+    end
+
+    NOSTORE -.->|"后续出现共享迹象"| STATS
+    TUNE -.->|"升温可升级为准入"| ADMIT
+</pre>
+<blockquote><p>模型或知识库版本变更时（MVCC 部件⑪）：目录对受影响类别<strong>批量失效 → 重算 KV 本体，但统计画像与准入决策沿用</strong>，无需重新冷启动——冷启动成本只在首次部署与新业务接入时支付一次。</p></blockquote>
 
 <!-- ================= 3 ================= -->
 <h2 id="s3">3. 背景：为什么 KV Cache 变成了 CDN 的问题</h2>

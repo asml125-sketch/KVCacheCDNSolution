@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KV Cache CDN - 专利评审材料</title>
+<!-- 浏览器打开本文件即可自动渲染 Mermaid 图表（需联网加载 CDN） -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f0f2f5; color: #1f2329; padding: 24px; line-height: 1.6;
+  }
+  /* 每页 = 一张 PPT 素材卡片，按页拆分复制 */
+  .slide {
+    background: #fff; max-width: 1120px; margin: 0 auto 24px;
+    padding: 40px 48px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08); page-break-after: always;
+  }
+  .slide h1 { font-size: 28px; margin-bottom: 8px; color: #0e5fd8; }
+  .slide h2 { font-size: 22px; margin-bottom: 16px; }
+  .slide h3 { font-size: 18px; margin: 16px 0 8px; }
+  .part-tag {
+    display: inline-block; font-size: 13px; color: #fff; background: #0e5fd8;
+    border-radius: 4px; padding: 2px 10px; margin-bottom: 12px;
+  }
+  .subtitle { color: #6b737c; font-size: 13px; }
+  /* 左图右文布局（整页配图页使用） */
+  .img-text { display: flex; gap: 32px; align-items: flex-start; }
+  .img-text .figure { flex: 1.2; min-width: 0; }
+  .img-text .text { flex: 1; }
+  .img-text .text li { margin: 8px 0; line-height: 1.7; }
+  /* 表格样式 */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #d5d9e0; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f2f6ff; }
+  .caption { color: #6b737c; font-size: 13px; margin-top: 6px; }
+  .page-break-hint { text-align: center; color: #b3bac3; font-size: 12px; margin: -12px auto 24px; max-width: 1120px; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ 封面页 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">封面</div>
+  <h1>KV Cache CDN</h1>
+  <p class="subtitle">专利IDEA评审材料</p>
+  <p style="margin-top:24px; font-size:16px;">面向大模型推理中 KV Cache 显存占用大、跨请求不可复用、首Token延迟高的难题，以 CDN 分层缓存+内容寻址思想，构建跨请求共享、就近分发的 KV Cache 内容分发网络。</p>
+</section>
+
+<!-- ═══════════════ Part 1：发明背景和现有技术（3页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-1 问题领域宏观背景</h2>
+  <p>大模型推理中，KV Cache 占显存巨大且按请求隔离，跨请求、跨用户无法复用：重复 Prefill 造成 30–70% 算力浪费，KV 相关开销占推理总成本 50%+；同时显存墙突出、首Token延迟大，推理服务商承担沉重算力成本，亟需将 KV Cache 从推理实例解耦并实现共享与就近分发。</p>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-2 现有技术对比与缺陷</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术</th><th>出处/技术路线</th><th>核心机制</th><th>具体缺陷与不足</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>PagedAttention / vLLM</td><td>SOSP'23</td><td>OS分页思想管理KV块，消除显存碎片</td><td>仅单GPU/单节点，跨节点无法共享复用</td></tr>
+      <tr><td>SGLang / RadixAttention</td><td>2023</td><td>基数树组织KV，跨请求前缀复用</td><td>严格限定单RDMA域，无法跨集群/跨地域</td></tr>
+      <tr><td>Mooncake 集群KV池</td><td>FAST'25</td><td>集群级VRAM/DRAM/SSD三级分层调度</td><td>单向卸载为主，缺多级缓存与全域分发</td></tr>
+    </tbody>
+  </table>
+  <p>上述方案复用范围均止步于单集群或单向卸载，未形成跨地域、就近服务的分发网络——这正是本发明的必要性所在。</p>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-3 技术演进趋势</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart LR
+    A["时代1 单机张量<br/>请求即焚"] --> B["时代2 本地分页<br/>PagedAttention"]
+    B --> C["时代3 集群共享<br/>RadixAttention"]
+    C --> D["时代4 跨集群解耦<br/>Mooncake/PrfaaS"]
+    D --> E["时代5 全域CDN<br/>本发明"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>演进驱动力：上下文爆炸、算力异构、地理分布三重推动</li>
+        <li>各代局限：共享范围逐代扩大，但均止步单集群或单向卸载</li>
+        <li>本发明位置：时代5，补齐多级缓存+全域分发+就近服务</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Part 2：本发明技术方案（6页，核心） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-1 总体逻辑架构</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    USER(("用户/Agent"))
+
+    subgraph CP["控制平面"]
+        GW["① 全局路由网关<br/>SLA分类·路由决策·熔断降级"]
+        CAT["② KV全局目录<br/>Radix树+DHT·内容寻址·租约"]
+        TID["③ 潮汐调度器<br/>预热预分发·成本套利"]
+        TRUST["④ 信任引擎<br/>信任评分·蜜罐校验"]
+    end
+
+    subgraph DP["数据平面·三级缓存"]
+        L2["L2 中心源站<br/>Core Prefill DC<br/>长上下文计算·版本化产出"]
+        L1["L1 区域POP<br/>热前缀驻留·三级分层存储"]
+        L0["L0 边缘节点<br/>就近Decode·SmartNIC解压"]
+    end
+
+    WAN["⑨ WAN传输加速层<br/>CacheGen压缩·RDMA/QUIC·微块多源"]
+
+    USER -->|"前缀指纹+SLA"| GW
+    GW -.->|"查询前缀分布"| CAT
+    GW -.->|"询价"| TID
+    GW -.->|"查询信任分"| TRUST
+    L2 ==>|"压缩KV流"| L1
+    L1 ==>|"就近拉取"| L0
+    L0 ==>|"流式Token"| USER
+    L2 --- WAN
+    L1 --- WAN
+    L0 --- WAN
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>控制平面：路由网关、KV目录、潮汐调度、信任引擎，负责路由与缓存准入</li>
+        <li>数据平面：L2中心源站（重算力）、L1区域POP（热前缀）、L0边缘（就近解码）三级</li>
+        <li>WAN传输层：CacheGen压缩+RDMA/QUIC双模，承载全部KV数据流</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-2 关键业务流程时序</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant GW as ① 全局路由网关
+    participant CAT as ② KV全局目录
+    participant E as ⑦ 边缘节点L0
+    participant R as ⑥ 区域POP L1
+    U->>GW: 请求(前缀指纹+SLA=实时)
+    GW->>CAT: 查询前缀分布与热度
+    CAT-->>GW: 区域POP命中92K/100K
+    GW->>E: 调度至就近边缘节点
+    E->>R: 拉取缺失KV块(压缩流)
+    R-->>E: 压缩KV块→SmartNIC解压→直写HBM
+    E->>E: 增量Prefill(仅8K新token)
+    E-->>U: TTFT≈1~2s 流式输出
+    Note over R,CAT: 热度+1→触发后台预分发
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>触发：用户提交带前缀指纹与SLA标签的推理请求</li>
+        <li>关键路径：网关查目录→命中→调度就近边缘→区域POP拉缺失KV块→增量Prefill</li>
+        <li>回退：未命中或链路失败时，网关降级至本地重算Prefill</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-3 内容寻址与全局目录</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart LR
+    P["请求前缀<br/>token序列"] --> FP["前缀指纹<br/>滚动哈希"]
+    FP --> CID["内容寻址块ID<br/>哈希=模型×tokenizer×量化×块内容"]
+    CID --> RT["Radix树<br/>前缀匹配"]
+    CID --> DHT["DHT<br/>全局定位"]
+    RT --> MAP["块ID→位置映射"]
+    DHT --> MAP
+    MAP --> ROUTE["路由到持有节点"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>输入：请求前缀token序列</li>
+        <li>核心：块ID=哈希(模型版本、tokenizer、量化方式、块内容)，与位置解耦</li>
+        <li>输出：Radix树前缀匹配+DHT全局定位，得块→位置映射并路由</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-4 分层存储与成本加权驱逐</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    A["KV块访问"] --> B["L0边缘 HBM<br/>高频短前缀"]
+    B -->|"降冷"| C["L1区域 CXL-DRAM/NVMe<br/>区域热前缀"]
+    C -->|"降冷"| D["L2核心<br/>全量+算力池"]
+    D -->|"降冷"| E["L3冷存储 NVMe/对象"]
+    E -.->|"预取召回"| C
+    B --> F["成本加权驱逐<br/>代价=重算×传输×未来命中率"]
+    C --> F
+    D --> F
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>四级存储：HBM(边缘热)→CXL-DRAM(区域)→核心全量→NVMe冷层</li>
+        <li>成本加权驱逐：代价=重算成本×传输成本×未来命中率，越上层越偏重算</li>
+        <li>预取：冷层按热度预取召回至区域层，减少回源</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-5 潮汐调度与多维路由决策</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart LR
+    REQ["推理请求"] --> SCORE["多维加权评分"]
+    SCORE --> H["命中率"]
+    SCORE --> T["端到端时延"]
+    SCORE --> C["算力/带宽成本"]
+    SCORE --> TID["时区潮汐"]
+    SCORE --> TR["信任分"]
+    H --> DEC["路由决策"]
+    T --> DEC
+    C --> DEC
+    TID --> DEC
+    TR --> DEC
+    DEC -->|"实时高优"| DC["DC集群 Mode A"]
+    DEC -->|"异步低成本"| P2P["P2P长尾 Mode B"]
+    DEC -->|"无缓存/不划算"| LOCAL["本地重算兜底"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>输入：请求SLA标签（实时/异步）与多维特征</li>
+        <li>决策：按命中率、时延、成本、潮汐、信任五维加权，取端到端最优而非命中率最优</li>
+        <li>三出口：DC高速拉取 / P2P就地Decode / 本地重算兜底</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-6 容错与一致性管理</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+stateDiagram-v2
+    [*] --> 服务中
+    服务中 --> 校验失败: 校验和/抽样注意力不符
+    校验失败 --> 备用源续传: 其他POP/Core可用
+    校验失败 --> 本地重算: 无可用源
+    备用源续传 --> 服务中
+    本地重算 --> 服务中
+    服务中 --> 版本切换: 模型/LoRA升级
+    版本切换 --> 新旧并行: MVCC快照
+    新旧并行 --> 原子切换: 验证通过
+    原子切换 --> 服务中
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>校验：块级校验和+抽样注意力验证，失败即标记块不可用</li>
+        <li>回退：优先重路由备用源续传，否则仅对缺失段本地重算（已收块不重算）</li>
+        <li>版本：MVCC快照，新旧并行服务，验证通过后原子切换</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Part 3：本发明的技术保护点（2页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 3 · 本发明的技术保护点</div>
+  <h2>保护点1：分层KV缓存网络与内容寻址目录</h2>
+  <ol>
+    <li><strong>技术特征</strong>：KV Cache解耦为边缘/区域/中心/冷存四级，按内容哈希（模型·分词器·量化·块）寻址</li>
+    <li><strong>创新点</strong>：CDN分层+内容寻址首次用于KV，缓存对象为模型绑定张量</li>
+    <li><strong>外部表现</strong>：统一KV拉取接口，可观测命中不同层级缓存节点</li>
+    <li><strong>取证手段</strong>：抓包见内容寻址块ID与层间KV流</li>
+  </ol>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 3 · 本发明的技术保护点</div>
+  <h2>保护点2：前缀指纹多维加权路由与热度准入预分发</h2>
+  <ol>
+    <li><strong>技术特征</strong>：前缀指纹+五维加权就近调度，达标者预分发</li>
+    <li><strong>创新点</strong>：路由由地理位置变为多目标加权，先观察后准入</li>
+    <li><strong>外部表现</strong>：同一请求随时段调度不同节点，边缘预置热前缀</li>
+    <li><strong>取证手段</strong>：抓包见路由决策与预分发指令</li>
+  </ol>
+  <h3>差异性总结</h3>
+  <p>最大差别——KV由单集群内存管理升级为跨地域内容寻址分发的CDN资产</p>
+</section>
+
+<!-- ═══════════════ Part 4：本发明的技术效果（1页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 4 · 本发明的技术效果</div>
+  <h2>问题 → 方案 → 效果 闭环</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术问题（Part1）</th><th>对应技术方案（Part2）</th><th>产生的技术效果</th><th>量化指标</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>KV按请求隔离、跨请求无法复用，重复Prefill浪费</td><td>内容寻址目录+分层缓存网络</td><td>跨请求/跨用户共享同一前缀KV</td><td>前缀复用率30–70%，Prefill算力节省30–70%</td></tr>
+      <tr><td>显存占用巨大、显存墙</td><td>分层存储L0–L3+成本加权驱逐</td><td>热数据驻留边缘，冷数据下沉NVMe</td><td>单请求TB级KV仍可服务，存储成本降低</td></tr>
+      <tr><td>首Token延迟大</td><td>就近边缘Decode+压缩流式传输</td><td>拉取命中KV替代本地重算</td><td>TTFT降2.2~3.3倍；P90 TTFT −64%</td></tr>
+      <tr><td>服务商算力成本沉重</td><td>潮汐调度+成本套利+双模Prefill</td><td>闲置/低价算力承接，全局TCO优化</td><td>推理总成本TCO降30–45%</td></tr>
+    </tbody>
+  </table>
+  <p><strong>因果机制</strong>：</p>
+  <ul>
+    <li>复用：内容寻址使块ID与位置解耦，相同前缀在不同请求映射同一块ID，一次Prefill多次消费</li>
+    <li>显存：分层存储按热度放置，成本加权驱逐优先释放重算贵的块，冷数据廉价持久化</li>
+    <li>延迟：边缘就近解码，RTT从100ms级降至10ms级，TTFT由本地重算10s降为拉取约1s</li>
+    <li>成本：潮汐调度把Prefill放至夜间闲置/低价算力区，叠加跨模型复用，故TCO下降</li>
+  </ul>
+</section>
+
+<!-- ═══════════════ Part 5：本发明的有益效果（1页） ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 5 · 本发明的有益效果</div>
+  <h2>多方视角收益</h2>
+  <table>
+    <thead>
+      <tr><th>视角</th><th>正向收益</th><th>量化预期</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>🧑 C端用户</td><td>首Token延迟降低、长上下文对话更流畅、多轮Agent响应更快</td><td>首Token延迟降50–90%（P90 TTFT −64%），长会话每token延迟降约90ms</td></tr>
+      <tr><td>🏢 企业用户/服务提供商</td><td>推理算力成本下降、吞吐提升、跨区域服务能力增强</td><td>推理TCO降30–45%，吞吐+54%，同硬件多处理115%请求</td></tr>
+      <tr><td>🔧 设备提供商</td><td>SmartNIC/DPU传输卸载、CXL内存池、Prefill专用芯片新需求</td><td>开辟KV分发新市场，拉动DPU/内存池/专用芯片出货</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</body>
+</html>
