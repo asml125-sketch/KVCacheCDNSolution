@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KV Cache CDN 解决方案 - 专利评审材料</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f0f2f5; color: #1f2329; padding: 24px; line-height: 1.6;
+  }
+  .slide {
+    background: #fff; max-width: 1120px; margin: 0 auto 24px;
+    padding: 40px 48px; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08); page-break-after: always;
+  }
+  .slide h1 { font-size: 28px; margin-bottom: 8px; color: #0e5fd8; }
+  .slide h2 { font-size: 22px; margin-bottom: 16px; color: #1f2329; }
+  .slide h3 { font-size: 18px; margin: 16px 0 8px; color: #0e5fd8; }
+  .part-tag {
+    display: inline-block; font-size: 13px; color: #fff; background: #0e5fd8;
+    border-radius: 4px; padding: 2px 10px; margin-bottom: 12px;
+  }
+  .subtitle { color: #6b737c; font-size: 13px; }
+  .img-text { display: flex; gap: 32px; align-items: flex-start; }
+  .img-text .figure { flex: 1.2; min-width: 0; }
+  .img-text .text { flex: 1; }
+  .img-text .text li { margin: 8px 0; line-height: 1.7; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #d5d9e0; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f2f6ff; }
+  pre.mermaid { background: #fafbfd; padding: 8px 0; overflow-x: auto; }
+  ol, ul { padding-left: 22px; }
+  .lead { margin-top: 24px; font-size: 16px; color: #2a3a52; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ 封面页 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">封面</div>
+  <h1>KV Cache CDN 解决方案</h1>
+  <p class="subtitle">专利IDEA评审材料</p>
+  <p class="lead">面向广域网环境下 KV Cache 跨请求复用与跨地域分发的难题，以四大范式重构——缓存亲和性路由、PIC 微模块异步分发、经济博弈自适应降级、算存地理分离——将 KV Cache 从"单集群内存管理"升级为"全球分布式状态共享网络"。</p>
+</section>
+
+<!-- ═══════════════ Part 1：发明背景和现有技术 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-1 问题领域宏观背景</h2>
+  <ol>
+    <li><strong>Prefill 计算瓶颈</strong>：复杂度 O(L²)，长上下文下 Prefill 占满 GPU 算力、推高 TTFT，限制 MaaS 平台吞吐与响应</li>
+    <li><strong>PD 分离跨域鸿沟</strong>：PD 分离向跨 DC/WAN 演进，KV Cache 体量达文本数万倍且难压缩，跨域传输成本反超本地重算，物理与经济双重鸿沟</li>
+    <li><strong>全局复用错配</strong>：海量并发依赖少数基座模型，重复 Prefill 普遍；Prefix Cache/Radix Tree 困于单机单 DC"缓存孤岛"，全局复用潜力无法兑现</li>
+  </ol>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-2 现有技术对比与缺陷</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术</th><th>出处/技术路线</th><th>核心机制</th><th>具体缺陷与不足</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>本地内存池 / 同机房 RDMA</td><td>vLLM / SGLang / Mooncake</td><td>请求触发后节点主动 Pull 拉取 KV</td><td>假设 100G+ LAN 稳定带宽，1–10G WAN 下 Pull 是死路</td></tr>
+      <tr><td>完整会话 / 连续前缀缓存</td><td>Prefix Cache / RadixAttention</td><td>缓存基本单位为连续 Token 序列</td><td>"铁板一块"粒度，无法只传值得传的高共享部分</td></tr>
+      <tr><td>算存同机房强耦合部署</td><td>业界惯例</td><td>计算与缓存同机房/机架绑定</td><td>每地域堆高配 GPU、数据孤岛，CapEx 随地域线性膨胀</td></tr>
+    </tbody>
+  </table>
+  <p>上述方案在调度方向、数据形态、未命中策略、部署拓扑四个维度均以"局域网"为前提，未围绕广域网物理局限重构——这正是本发明必要性所在。</p>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 1 · 发明背景和现有技术</div>
+  <h2>P1-3 技术演进趋势</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart LR
+    A["时代1 单机缓冲&lt;br/&gt;请求即焚"] --> B["时代2 本地分页&lt;br/&gt;PagedAttention"]
+    B --> C["时代3 集群共享&lt;br/&gt;RadixAttention"]
+    C --> D["时代4 跨集群解耦&lt;br/&gt;Mooncake/PrfaaS"]
+    D --> E["时代5 全域CDN&lt;br/&gt;四大创新点"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>演进驱动力：上下文爆炸、算力异构、地理分布三重推动</li>
+        <li>各代局限：共享范围逐代扩大，但仍以"局域网拉取+完整缓存"为前提</li>
+        <li>本发明位置：时代5，以四大范式围绕广域网物理局限重构</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Part 2：本发明技术方案 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-1 总体逻辑架构</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    USER(("用户/Agent"))
+
+    subgraph CP["控制平面"]
+        GW["① 全局路由网关&lt;br/&gt;亲和性路由·博弈决策"]
+        CAT["② KV全局目录&lt;br/&gt;模块级内容寻址"]
+        TID["③ 潮汐调度器&lt;br/&gt;批量预分发·成本套利"]
+    end
+
+    subgraph DP["数据平面·三级缓存+算存分离"]
+        L2["⑤ 中心源站 L2&lt;br/&gt;中心生成高价值KV资产"]
+        L1["⑥ 区域POP L1&lt;br/&gt;大容量KV驻留"]
+        L0["⑦ 边缘节点 L0&lt;br/&gt;靠近用户就近Decode"]
+    end
+
+    WAN["⑨ WAN传输层&lt;br/&gt;压缩·PIC微模块异步分发"]
+
+    USER -->|"前缀/模块指纹+SLA"| GW
+    GW -.->|"查询模块驻留"| CAT
+    GW -.->|"询价/预分发指令"| TID
+    TID -.->|"夜间批量Push"| L1
+    L2 ==>|"压缩KV流"| L1
+    L1 ==>|"就近拉取"| L0
+    L0 ==>|"流式Token"| USER
+    L2 --- WAN
+    L1 --- WAN
+    L0 --- WAN
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>控制平面：路由网关（亲和路由+博弈）、KV目录（模块寻址）、潮汐调度（批量预分发）</li>
+        <li>数据平面：中心源站（生成）/区域POP（驻留）/边缘（就近解码）三级，算存地理分离</li>
+        <li>WAN传输层：压缩+PIC微模块，承载全部 KV 数据流</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-2 本发明方案定位（两维对比）</h2>
+  <p>本发明复用内容 CDN 三十年方法论、平移到 KV Cache，同时以四大范式区别于现有推理方案。</p>
+  <h3>对比一：本方案 vs 传统 CDN 方案（内容 CDN 方法的 KV 语义平移）</h3>
+  <table>
+    <thead><tr><th>传统 CDN</th><th>本方案对应部件</th><th>关键差异（KV 特有）</th></tr></thead>
+    <tbody>
+      <tr><td>智能 DNS / GSLB</td><td>全局路由网关 + KV 目录</td><td>路由依据从"地理位置"变为"前缀指纹 × 成本 × SLA × 潮汐"</td></tr>
+      <tr><td>源站（Origin）</td><td>中心 Prefill DC</td><td>回源代价从带宽变为 GPU 算力（贵 100–1000×）</td></tr>
+      <tr><td>边缘 POP</td><td>区域 / 边缘节点</td><td>缓存对象是模型绑定张量（须匹配模型/tokenizer/LoRA）</td></tr>
+      <tr><td>回源拉取</td><td>远端 Prefill 或 KV 传输</td><td>可压缩（3.5–4.3×）、可前缀部分命中</td></tr>
+      <tr><td>内容预热</td><td>潮汐调度预分发</td><td>预热的是"计算结果"——预热即预计算</td></tr>
+      <tr><td>缓存失效</td><td>版本/租户策略失效</td><td>失效键 = 模型 + tokenizer + LoRA 指纹</td></tr>
+    </tbody>
+  </table>
+  <h3>对比二：本方案 vs 现有推理方案（六维降维打击）</h3>
+  <table>
+    <thead><tr><th>维度</th><th>现有推理方案（本地 HBM / 同机房 RDMA）</th><th>本方案（KV Cache CDN）</th></tr></thead>
+    <tbody>
+      <tr><td>核心假设</td><td>网络带宽充足且稳定（100G+ LAN）</td><td>网络带宽受限且存在抖动（1–10G WAN）</td></tr>
+      <tr><td>数据移动方向</td><td>请求触发后节点主动拉取（Pull）</td><td>后台异步推送（Push）+ 网关智能路由</td></tr>
+      <tr><td>缓存粒度</td><td>完整会话或长连续 Prefix</td><td>基于 PIC 的独立微模块（System/Tools）</td></tr>
+      <tr><td>未命中策略</td><td>本地 GPU 重新计算</td><td>动态博弈：T_net vs T_compute 择优执行</td></tr>
+      <tr><td>拓扑结构</td><td>算存强耦合（单机房内）</td><td>算存地理分离（中心生成预热、边缘低成本服务）</td></tr>
+      <tr><td>核心壁垒</td><td>硬件堆叠（大内存、RDMA 网卡）</td><td>调度算法、数据压缩/拆解技术、异步工程化</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-3 关键业务流程时序</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant GW as ① 路由网关
+    participant CAT as ② KV目录
+    participant E as ⑦ 边缘节点
+    participant Core as ⑤ 中心源站
+    U->>GW: 请求(会话ID+模块指纹)
+    GW->>CAT: 查询模块驻留
+    CAT-->>GW: 亲和节点齐备/远端有/全域未命中
+    alt 亲和命中(创新点一)
+        GW->>E: 强制路由至驻留节点
+        E->>E: PIC模块装配+D增量(创新点二)
+        E-->>U: TTFT≈1~2s
+    else 缺失但远端有
+        E->>E: 评估T_net vs T_compute(创新点三)
+        E-->>U: 拉取 或 本地重算
+    else 全域未命中
+        GW->>Core: 中心生成(创新点四)
+        Core-->>E: 压缩KV流水线直推+夜间预分发
+        E-->>U: 流式输出
+    end
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>触发：用户提交带会话ID与模块指纹的推理请求</li>
+        <li>三条路径：亲和命中就地装配；缺失则博弈择优；全域未命中则中心生成</li>
+        <li>回退：博弈判定不划算时，降级至本地重算 Prefill</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-4 创新点一：缓存亲和性路由（计算找数据）</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    subgraph PULL["现有：数据找计算"]
+        M1["请求到达·本地未命中"] --> M2["跨网拉取KV"]
+        M2 --> M3["1-10G WAN&lt;br/&gt;80s灾难"]
+    end
+    subgraph ROUTE["本发明：计算找数据"]
+        R1["请求到达网关"] --> R2["查轻量目录·几KB"]
+        R2 --> R3["定位驻留节点(东京)"]
+        R3 --> R4["强制路由·就地命中"]
+    end
+    PULL -. "范式逆转" .-> ROUTE
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>机制：网关维护全局 KV 目录，查询历史会话 KV 驻留节点后强制路由</li>
+        <li>价值：几 KB 路由决策替代几 GB 跨域传输</li>
+        <li>边界：驻留节点故障时降级为就近+增量重算，亚秒级可承受</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-5 创新点二：PIC 微模块分解与异步分发</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    CTX["上下文"] --> A["A 系统提示词&lt;br/&gt;0.6-1.3GB·全平台共享"]
+    CTX --> B["B 工具Schema&lt;br/&gt;0.3-0.6GB·业务线共享"]
+    CTX --> C["C RAG文档&lt;br/&gt;10-25GB·租户共享"]
+    CTX --> D["D 对话历史&lt;br/&gt;100-200MB·会话私有"]
+    A -. "异步Push" .-> AB["边缘预热&lt;br/&gt;压缩后几百MB"]
+    B -. "异步Push" .-> AB
+    C -. "区域驻留" .-> CR["区域POP"]
+    D -. "亲和驻留" .-> DH["驻留节点"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>分解：按共享度拆为 A/B/C/D 四类独立寻址模块</li>
+        <li>分发：仅异步后台分发高共享的 A/B（1–2GB→压缩后几百MB）</li>
+        <li>收益：请求时仅缺 D 增量，WAN 传输由 80s 压到 1–2s/零感知</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-6 创新点三：经济博弈自适应降级决策引擎</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    MISS["本地缺失"] --> PROBE["实测带宽B̂·RTT·丢包"]
+    PROBE --> EST["估算T_net vs T_compute"]
+    EST --> CMP{"T_net vs T_compute"}
+    CMP -->|"T_net占优"| FETCH["远端拉取"]
+    CMP -->|"T_net劣势(15s vs 2s)"| RECOMP["放弃命中·本地重算"]
+    FETCH --> MON{"传输中拥塞?"}
+    MON -->|"恶化"| ABORT["中断·已收块MVCC缝合"]
+    MON -->|"正常"| DONE["收满Decode"]
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>机制：拉取前用 EWMA 实测带宽估计 T_net，与 T_compute 实时比较</li>
+        <li>决策：拥塞时果断放弃缓存命中、本地重算（宁可重算绝不死等）</li>
+        <li>加固：AIMD 拉取预算窗口 + 迟滞带防抖 + 传输中中断缝合</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 2 · 本发明技术方案</div>
+  <h2>P2-7 创新点四：算存地理分离的中心预热拓扑</h2>
+  <div class="img-text">
+    <div class="figure">
+      <pre class="mermaid">
+flowchart TB
+    USER(("全球用户"))
+    NEW["新增长上下文请求"] --> CORE["中心源站 L2&lt;br/&gt;算力洼地生成KV资产"]
+    CORE ==>|"夜间/低谷批量Push&lt;br/&gt;(类软件更新)"| REG["区域POP L1"]
+    REG ==>|"热度预热下沉"| EDGE["边缘 L0&lt;br/&gt;小显存低成本"]
+    USER -->|"亲和路由+模块命中"| EDGE
+    EDGE ==>|"就近Decode"| USER
+      </pre>
+    </div>
+    <div class="text">
+      <ol>
+        <li>解耦：KV 生成（中心 Prefill DC）与推理服务（边缘 Decode）地理解耦</li>
+        <li>预热：夜间/低谷把高价值 KV 资产批量推送到边缘 SSD/MemoryPool</li>
+        <li>收益：边缘只需小显存，全球扩张 CapEx 随地域数非线性下降</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Part 3：本发明的技术保护点 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 3 · 本发明的技术保护点</div>
+  <h2>技术保护点（1/2）</h2>
+  <h3>保护点1：缓存亲和性路由（计算找数据）</h3>
+  <ol>
+    <li><strong>技术特征</strong>：网关维护"模块/会话→驻留节点"全局目录，请求按驻留位置而非地理就近强制路由。</li>
+    <li><strong>创新点</strong>：调度由"数据找计算(Pull)"逆转为"计算找数据(Routing)"，几 KB 决策替代 GB 级传输。</li>
+    <li><strong>外部表现</strong>：同用户连续请求固定路由至驻留节点；网关对外暴露"模块驻留查询"接口。</li>
+    <li><strong>取证手段</strong>：抓包见含会话指纹与目标节点标识的路由决策报文。</li>
+  </ol>
+  <h3>保护点2：PIC 微模块分解与异步分发</h3>
+  <ol>
+    <li><strong>技术特征</strong>：上下文按共享度拆为 A/B/C/D 独立寻址模块，仅异步分发高共享 A/B 至边缘。</li>
+    <li><strong>创新点</strong>：缓存粒度由"完整会话"重构为"PIC 微模块"，同步传输变后台异步分发。</li>
+    <li><strong>外部表现</strong>：边缘预置 A/B 副本；请求仅补传 D 增量 100–200MB。</li>
+    <li><strong>取证手段</strong>：抓包见模块级块 ID 与异步批量预分发流量。</li>
+  </ol>
+</section>
+
+<section class="slide">
+  <div class="part-tag">Part 3 · 本发明的技术保护点</div>
+  <h2>技术保护点（2/2）</h2>
+  <h3>保护点3：T_net vs T_compute 自适应降级引擎</h3>
+  <ol>
+    <li><strong>技术特征</strong>：以 EWMA 实测带宽估算 T_net 并与 T_compute 实时比较，拥塞时放弃命中、本地重算。</li>
+    <li><strong>创新点</strong>：缓存命中由确定性逻辑变为动态博弈，类 TCP 的 AIMD 预算窗口 + 迟滞带防抖。</li>
+    <li><strong>外部表现</strong>：同缺失条件下，拥塞时本地重算、畅通时远端拉取，决策随实时网络状态变化。</li>
+    <li><strong>取证手段</strong>：抓包见拉取/重算路径切换随链路状态变化；逆向网关可证比较逻辑存在。</li>
+  </ol>
+  <h3>保护点4：算存地理分离的中心预热拓扑</h3>
+  <ol>
+    <li><strong>技术特征</strong>：KV 生成（中心）与推理服务（边缘）地理解耦，夜间批量推送高价值 KV 资产至边缘。</li>
+    <li><strong>创新点</strong>：打破算存同机房强耦合，实现"中心预热、边缘低成本推理"。</li>
+    <li><strong>外部表现</strong>：边缘显存规格显著小于中心；夜间存在中心→边缘批量推送流量。</li>
+    <li><strong>取证手段</strong>：观测拓扑（中心与边缘分离）与低谷批量推送模式，对比边缘硬件与能力。</li>
+  </ol>
+  <p><strong>差异性总结</strong>：现有技术以"拉取+完整缓存+确定性读+算存耦合"为特征，本发明以"路由+微模块+经济博弈+算存分离"四维范式重构，把 KV Cache 升级为全球分布式状态共享网络。</p>
+</section>
+
+<!-- ═══════════════ Part 4：本发明的技术效果 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 4 · 本发明的技术效果</div>
+  <h2>问题 → 方案 → 效果 闭环</h2>
+  <table>
+    <thead>
+      <tr><th>现有技术问题（Part1）</th><th>对应技术方案（Part2）</th><th>产生的技术效果</th><th>量化指标</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>广域硬传几十 GB KV 需数十秒</td><td>亲和路由 + PIC 微模块异步分发</td><td>跨域传输从请求关键路径摘除</td><td>80s → 1–2s → 零感知</td></tr>
+      <tr><td>完整会话无法跨位置独立复用</td><td>PIC 微模块分解 A/B/C/D</td><td>只分发高共享小体量模块</td><td>A/B 1–2GB → 压缩后几百 MB</td></tr>
+      <tr><td>确定性读缓存在 WAN 失效</td><td>经济博弈决策引擎</td><td>拥塞时果断本地重算保 SLA</td><td>T_net 15s vs T_compute 2s 时 SLA 不崩</td></tr>
+      <tr><td>算存强耦合每地域高配 GPU</td><td>算存分离中心预热</td><td>边缘小显存服务、CapEx 下降</td><td>TCO −30%~−45%</td></tr>
+    </tbody>
+  </table>
+  <p><strong>因果机制</strong>：</p>
+  <ul>
+    <li>延迟：亲和路由消灭请求触发的跨域传输，微模块把必须跨域的压到可异步分发的规模，故 WAN 传输从 80s 压到 1–2s。</li>
+    <li>复用：PIC 把 KV 与位置/上下文解绑，相同语义块跨模板独立寻址，实现一次 Prefill 多次消费。</li>
+    <li>容错：博弈引擎用实测带宽做实时经济学论证，遇拥塞退回本地，SLA 不被网络拖垮。</li>
+    <li>成本：中心赚算力规模的钱、边缘赚命中的钱、传输赚低谷的钱，三者叠加使 TCO 下降。</li>
+  </ul>
+</section>
+
+<!-- ═══════════════ Part 5：本发明的有益效果 ═══════════════ -->
+<section class="slide">
+  <div class="part-tag">Part 5 · 本发明的有益效果</div>
+  <h2>多方视角收益</h2>
+  <table>
+    <thead>
+      <tr><th>视角</th><th>正向收益</th><th>量化预期</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>🧑 C端用户</td><td>首Token延迟降低、长上下文对话更流畅、多轮 Agent 响应更快</td><td>首Token延迟降 50–90%（P90 TTFT −64%），长会话每 token 延迟降约 90ms</td></tr>
+      <tr><td>🏢 企业用户/服务提供商</td><td>推理算力成本下降、吞吐提升、跨区域服务能力增强</td><td>推理 TCO 降 30–45%，吞吐 +54%，同硬件多处理 115% 请求</td></tr>
+      <tr><td>🔧 设备提供商</td><td>SmartNIC/DPU 传输卸载、CXL 内存池、Prefill 专用芯片新需求</td><td>开辟 KV 分发新市场，拉动 DPU/内存池/专用芯片与边缘小显存卡出货</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<script type="module">
+  import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')
+    .then(mod => {
+      const mermaid = mod.default;
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        themeVariables: {
+          primaryColor: '#e8f0fe',
+          primaryBorderColor: '#2563eb',
+          primaryTextColor: '#12263f',
+          lineColor: '#5b6b7f',
+          fontSize: '14px',
+          fontFamily: '"Microsoft YaHei", "PingFang SC", sans-serif'
+        },
+        flowchart: { curve: 'basis', padding: 12 },
+        sequence: { useMaxWidth: true }
+      });
+      mermaid.run({ querySelector: 'pre.mermaid' });
+    })
+    .catch(() => {
+      document.querySelectorAll('pre.mermaid').forEach(el => {
+        el.style.whiteSpace = 'pre';
+        el.style.fontFamily = 'Consolas, monospace';
+        el.style.fontSize = '12px';
+        el.style.color = '#8792a3';
+        el.style.display = 'block';
+      });
+    });
+</script>
+</body>
+</html>
