@@ -188,10 +188,10 @@
 <div class="tablewrap"><table>
   <thead><tr><th>#</th><th>创新点</th><th>范式转变</th><th>一句话机制</th><th>关键收益</th></tr></thead>
   <tbody>
-    <tr><td>一</td><td>调度范式逆转</td><td>数据找计算（Pull）→ 计算找数据（Routing）</td><td>网关查全局 KV 目录，强制路由到缓存驻留节点</td><td>用几 KB 路由决策替代几 GB 跨域传输</td></tr>
+    <tr><td>一</td><td>调度范式逆转</td><td>数据找计算（Pull）→ 计算找数据（Routing）</td><td>网关查全局 KV 目录，将 KV 驻留作为路由的高权重因子</td><td>用几 KB 路由决策替代几 GB 跨域传输</td></tr>
     <tr><td>二</td><td>数据形态重构</td><td>完整会话缓存 → PIC 微模块异步分发</td><td>上下文解耦为独立寻址模块，仅异步分发高共享部分</td><td>广域传输从几十秒压缩到 1–2 秒甚至零感知</td></tr>
     <tr><td>三</td><td>经济博弈降级</td><td>确定性读缓存 → 动态博弈决策</td><td>实时评估 T_net vs T_compute，择优执行</td><td>恶劣网络下 SLA 不崩溃（宁可重算，绝不死等）</td></tr>
-    <tr><td>四</td><td>部署拓扑解耦</td><td>算存强耦合同机房 → 全球算存分离</td><td>中心生成高价值 KV 资产，低谷期批量推送边缘</td><td>边缘只需小显存，全球扩张 CapEx 大幅下降</td></tr>
+    <tr><td>四</td><td>部署拓扑解耦</td><td>算存强耦合同机房 → 全球算存分离</td><td>中心生成高价值 KV 资产，低谷期批量推送边缘</td><td>边缘就近 Decode、免大 Prefill 算力池，全球扩张 CapEx 下降</td></tr>
   </tbody>
 </table></div>
 
@@ -219,14 +219,14 @@
 <div class="tablewrap"><table>
   <thead><tr><th>维度</th><th>传统静态内容 CDN</th><th>KV Cache CDN</th></tr></thead>
   <tbody>
-    <tr><td>内容属性</td><td>静态独立文件</td><td>模型绑定张量，须匹配模型版本、tokenizer、位置编码、LoRA</td></tr>
+    <tr><td>内容属性</td><td>静态独立文件，可跨机器/厂商/版本读取</td><td><strong>模型绑定张量——严格绑定模型权重/结构、tokenizer/prompt 模板/RoPE 位置策略、精度量化/张量布局/TP-PP、LoRA/系统版本/引擎实现，任一不匹配即不可流用</strong></td></tr>
     <tr><td>增长特性</td><td>完整文件分发</td><td>增量追加：前缀复用、后缀持续生成</td></tr>
     <tr><td>匹配粒度</td><td>URL 完整匹配</td><td>前缀/语义块部分匹配，公共前缀越长收益越大</td></tr>
     <tr><td>错误影响</td><td>404 / 文件损坏</td><td><strong>静默的生成质量劣化、逻辑错乱、输出不可控</strong></td></tr>
     <tr><td>回源代价</td><td>仅带宽成本（拉文件）</td><td>算力 + 时间成本极高（重跑 Prefill）</td></tr>
   </tbody>
 </table></div>
-<p>回源代价不对称是关键：传统 CDN 未命中的代价只是带宽，KV CDN 未命中的代价是昂贵的 GPU 计算——<strong>这使缓存命中的经济学价值更强，也使错误容忍度更低</strong>。此外，全球算力分布极度不均（北美/东亚密集 vs 全球海量闲置消费级 GPU），把 KV 视为 CDN 资产还能通过 P2P 网络"吸附"长尾算力，形成 DC 骨干 + P2P 毛细血管的双层结构（部件⑧，见 §6.2）。</p>
+<p>KV 并不能像网页那样自由流通——它严格绑定模型与工程上下文。为此，块级寻址必须携带一份<strong>不可变的 KV 兼容性清单（Compatibility Manifest）</strong>：内容寻址不再是「模型 × tokenizer × 量化 × 块内容」，而是「哈希(兼容性清单 × 块内容)」（§6.2 部件②）。回源代价不对称同样关键：传统 CDN 未命中的代价只是带宽，KV CDN 未命中的代价是昂贵的 GPU 计算——<strong>这使缓存命中的经济学价值更强，也使错误容忍度更低</strong>。此外，全球算力分布极度不均（北美/东亚密集 vs 全球海量闲置消费级 GPU），把 KV 视为 CDN 资产还能通过 P2P 网络"吸附"长尾算力，形成 DC 骨干 + P2P 毛细血管的双层结构（部件⑧，见 §6.2）。</p>
 
 <h3 id="s1-3">1.3 业界研究热点与技术演进方向</h3>
 <p>截至 2026 年 9 月，五个热点构成清晰的研究梯度：</p>
@@ -388,7 +388,7 @@
 <h3 id="s2-2">2.2 机制：Cache-Affinity Routing（缓存亲和性路由）</h3>
 <p>KV Cache CDN 的第一个创新在于<strong>逆转调度的方向</strong>：不再让数据去找计算，而是让计算去找数据。</p>
 <ul>
-  <li><strong>机制</strong>：API 网关维护一个轻量级的全局 KV 目录。当用户请求到达时，网关<strong>不随机分配</strong>节点（也不只按地理就近分配），而是先查询该用户的历史会话 KV Cache 驻留在哪个边缘节点（例如"东京节点"），然后<strong>强制将该用户的请求路由到东京节点</strong>。</li>
+  <li><strong>机制</strong>：API 网关维护一个轻量级的全局 KV 目录。当用户请求到达时，网关<strong>不随机分配</strong>节点、也不只按地理就近分配，而是把"KV 驻留位置"作为路由决策的一个<strong>高权重因子（而非唯一硬约束）</strong>：查得历史会话 KV 驻留在东京节点后，在综合考量下<strong>优先</strong>路由到东京——同时权衡持续 Decode 的 RTT、跨境合规与故障集中度（§2.4）。</li>
   <li><strong>价值</strong>：彻底消除跨域传输庞大 KV Cache 的需求。用极小的元数据（几 KB 的路由决策）替代了庞大的数据传输（几 GB 的 KV Cache）。<strong>让请求移动的成本，远低于数据移动的成本。</strong></li>
 </ul>
 <p>成本不对称可以量化到数量级：一条目录记录（前缀/会话指纹 16–32 字节 + 节点句柄 + 生命周期元数据）对比 KV 本体（GQA-70B 每 token 320 KB，见 §1.4.2），<strong>相差 5–6 个数量级</strong>；路由决策在网关本地完成，耗时微秒~毫秒级，且<strong>不占用任何跨域带宽</strong>。</p>
@@ -405,7 +405,7 @@ flowchart TB
     subgraph ROUTE["范式 B：计算找数据（本方案 Routing）"]
         R1["请求到达网关"] --> R2["查询轻量 KV 目录&lt;br/&gt;几 KB 元数据 · 微秒级"]
         R2 --> R3["定位 KV 驻留节点（如东京）"]
-        R3 --> R4["请求强制路由过去 · 就地命中"]
+        R3 --> R4["综合考量后优先路由 · 就地命中"]
         R4 --> R5["TTFT ≈ 1–2 s 或零感知"]
     end
 
@@ -428,21 +428,22 @@ sequenceDiagram
     GW->>CAT: 查询会话与模块驻留位置
     CAT-->>GW: 东京节点齐备（A/B/D 均驻留）
     GW->>GW: 亲和性决策：否决"地理就近"
-    GW->>JP: 强制路由至东京（亲和性路由）
+    GW->>JP: 优先路由至东京（亲和加权）
     JP->>JP: 命中驻留 KV · 仅增量 Prefill 新 token
     JP-->>U: TTFT ≈ 1–2 s · 流式输出
     Note over GW,SG: 新加坡仅在东京故障/过载时兜底：&lt;br/&gt;就近服务 + 缺失段走博弈决策（§4）
 </pre>
 
-<h3 id="s2-4">2.4 亲和性的边界与降级代价</h3>
-<p>亲和性是<strong>软约束</strong>而非硬绑定，三类场景必须允许"弃亲和"：</p>
+<h3 id="s2-4">2.4 亲和性的边界：软约束与综合考量</h3>
+<p>亲和性是<strong>软约束</strong>；真正的<strong>硬约束是用户体验（首字延迟 + 持续 Decode 的 RTT）与综合成本</strong>。把新加坡用户路由到东京，省下一次 Prefill，却可能付出整段会话持续的 Decode RTT 上浮、跨境数据合规风险与故障集中度的代价。因此至少四类场景须"弃亲和"或降低亲和权重：</p>
 <ol>
+  <li><strong>持续 RTT 代价超过一次性 Prefill 收益</strong>：亲和命中省的是 Prefill（一次性），但 Decode 逐 token 持续发生，远端 Decode 的 RTT 会拖累整个会话节奏（§1.5），须按会话预计长度折算；</li>
+  <li><strong>跨境合规 / 数据主权约束</strong>：会话 KV 与请求须在合规地域处理，跨境亲和路由让位于合规；</li>
   <li><strong>驻留节点故障或过载</strong>：熔断切换至就近节点，缺失部分按 §4 博弈决策（拉取或重算）；</li>
-  <li><strong>首次请求（无历史会话）</strong>：退化为地理就近 + 共享模块预热命中（§3），随会话建立自然形成新的亲和锚点；</li>
-  <li><strong>负载均衡与容灾再平衡</strong>：亲和权重需与全局负载、潮汐成本（§5.4）联合折中。</li>
+  <li><strong>首次请求（无历史会话）</strong>：退化为地理就近 + 共享模块预热命中（§3）。</li>
 </ol>
-<p>关键在于<strong>降级代价的量化</strong>：假设会话上下文 100K，因故障丢失亲和、切换到已预热共享模块 A/B 的备选节点，缺失的只是动态部分。以 §6.4 流程 A 的参数为例，缺失 8K token 本地重算仅需 8K ÷ 10K token/s ≈ <strong>0.8 秒</strong>——与正常路径的秒级 TTFT 同量级。</p>
-<blockquote><p><strong>亲和性的经济学</strong>：命中亲和，省下的是 GB 级跨域传输（80 s / 8 GB 档）；丢失亲和，付出的只是亚秒级增量重算。收益与代价的严重不对称，正是这一调度范式成立的根本原因。</p></blockquote>
+<p>关键在于<strong>降级代价的量化</strong>：假设会话上下文 100K，因上述任一原因弃亲和、切换到已预热共享模块 A/B 的备选节点，缺失的只是动态部分。以 §6.4 流程 A 的参数为例，缺失 8K token 本地重算仅需 8K ÷ 10K token/s ≈ <strong>0.8 秒</strong>——与正常路径的秒级 TTFT 同量级。</p>
+<blockquote><p><strong>亲和性的经济学</strong>：亲和是权重最高的因子但绝非绝对命令。命中亲和省下的是 GB 级跨域传输（一次性 80 s / 8 GB 档），丢失亲和付出的是亚秒级增量重算；但若亲和把请求推向遥远节点，省下的 Prefill 会被持续 RTT 与合规风险抵消——路由必须把它们放进同一成本函数（§6.2 部件①）。</p></blockquote>
 
 <h3 id="s2-5">2.5 小结与系统落点</h3>
 <div class="conclusion-strip">创新点一把"跨域 KV 传输问题"转化为"路由问题"：数据不动、请求流动。它是一切后续创新的前提——只有先消灭了请求触发的实时跨域传输，广域 KV 共享才有可行性。系统落点：§6.2 部件①（全局路由网关的亲和性决策）与部件②（轻量全局 KV 目录）。</div>
@@ -456,7 +457,7 @@ sequenceDiagram
 <p>无论是 vLLM 的 Prefix Cache 还是 SGLang 的 Radix Tree，缓存的基本单位通常是<strong>"连续的 Token 序列"或"完整的会话历史"</strong>。这种"铁板一块"的粒度在单机/集群内没有问题，但放到广域分发场景是致命的：要么整段传输（几十 GB）、要么整段重算——没有中间态，也就没有"只传值得传的部分"这一选项。</p>
 
 <h3 id="s3-2">3.2 位置无关缓存（PIC）：微模块化的数学根基</h3>
-<p>把 KV 从"铁板一块"解耦为"可独立寻址的微模块"，依赖位置无关缓存（Position-Independent Caching，PIC）技术的成熟。不同于仅支持"前缀从头匹配"的传统缓存，PIC 把 KV 从"位置绑定"中解放，使<strong>任意语义块可以独立寻址、独立存储、独立分发</strong>——这是把一个 Agent 上下文拆成微模块、并只分发其中高共享部分的技术前提（各论文完整贡献见附录 C；PIC 在四轴分类学中的位置见附录 B 轴四）。</p>
+<p>把 KV 从"铁板一块"解耦为"可独立寻址的微模块"，依赖位置无关缓存（Position-Independent Caching，PIC）技术的成熟。不同于仅支持"前缀从头匹配"的传统缓存，PIC 把 KV 从"位置绑定"中解放，使语义块可以<strong>独立寻址、独立存储</strong>——这是把一个 Agent 上下文拆成微模块、并只分发其中高共享部分的技术前提（各论文完整贡献见附录 C；PIC 在四轴分类学中的位置见附录 B 轴四）。但 PIC 只解决"位置"问题，"哪些块能拼在一起"由 <strong>KV 依赖 DAG</strong>（§3.3）决定，并非任意拼装。</p>
 <p>思想起点是 Prompt Cache [P3]（用 PML 显式声明可重用片段），EPIC [P9] 正式化了 PIC 概念，CacheBlend [P8] 落地了多块融合（非前缀拼接时选择性重算 ~10% token，TTFT −2.2~3.3×，已内置 LMCache）。但要真正理解"为什么 PIC 让微模块化成为可能"，必须看清它跨越的<strong>两道数学鸿沟</strong>。</p>
 
 <h4>3.2.1 为什么传统前缀缓存无法跨位置复用：两道鸿沟</h4>
@@ -511,7 +512,7 @@ flowchart TB
 
 <h4>3.2.4 对微模块分发的启示</h4>
 <p>PIC 原理直接决定了微模块分发的落地决策。<strong>位置编码层面</strong>：DeepSeek 的 MLA 架构因缓存的是无位置信息的隐向量、位置信息在 Attention 计算时才动态注入，<strong>天然免去重旋转开销，是 PIC 的最佳载体</strong>（呼应 §1.4.2 密度表中 MLA 的 69 KB/token）。<strong>上下文修复层面</strong>是工程成本的大头：追求低延迟高吞吐就选 LegoLink 类边界重算（只需少量定制 Kernel），追求极致零重算就投入离线训练（SemPIC），把成本转移到编译阶段。重算 token 数 k 是精度与成本的核心旋钮——k=0 损失精度、k 越大越接近全量重算，生产环境取 k=2~16 即可接近无损。</p>
-<blockquote><p><strong>一句话总结</strong>：PIC 的本质是——用数学旋转解决"位置"问题，用边界修复或离线训练解决"上下文"问题，从而把"绑死在特定位置的整段缓存"解构成"可自由拼装、全球流通的乐高积木"。这正是创新点二把上下文拆成 A/B/C/D 微模块、并跨节点异步分发的数学根基。</p></blockquote>
+<blockquote><p><strong>一句话总结</strong>：PIC 的本质是——用数学旋转解决"位置"问题，用边界修复或离线训练解决"上下文"问题，从而把"绑死在特定位置的整段缓存"解构成"可独立寻址、按依赖 DAG 装配、全球流通的模块积木"。这正是创新点二把上下文拆成 A/B/C/D 微模块、并跨节点异步分发的数学根基。</p></blockquote>
 
 <h3 id="s3-3">3.3 上下文的模块化解剖：A / B / C / D</h3>
 <p>把一个 Agent 的上下文按<strong>共享度</strong>拆分为四类可独立寻址的微模块：</p>
@@ -526,6 +527,8 @@ flowchart TB
 </table></div>
 <p>这张表同时完成了前缀分类体系（系统提示词模板 / RAG 知识库 / 热门公共上下文 / 多轮会话 / 高度个性化前缀五类）的<strong>模块化重投影</strong>——原有五类的统计特征与处置策略全部映射到模块坐标上：A/B 即"系统提示词与工具模板"类（全量准入 + 主动预分发 + 长 TTL）；C 即"RAG 知识库"类（准入 + 版本化存储 + 知识库变更时批量失效重算；"热门问题/公共上下文"归入 C 的公共子集，按周期窗口预分发）；D 即"多轮会话上下文"类（会话内复用、跨会话零共享，只在亲和节点本地保留）；D 的纯私有子集即"高度个性化前缀"，其处置见 §4.4。</p>
 <p><strong>关键观察</strong>：A + B 合计仅 <strong>1–2 GB</strong>——高共享、小体量、低变更频率，正是"黄金分发对象"；经 INT4 量化与 CacheGen 压缩后仅<strong>几百 MB</strong>。而真正庞大的 C（10–25 GB）与动态的 D 天然不适合全球分发——它们的正确归宿分别是"租户级区域驻留"与"亲和节点会话驻留"（§2）。</p>
+
+<p><strong>重要澄清：A/B/C/D 是按业务语义（共享度）做的分类，并不等于可自由拼接的计算模块。</strong> 因果注意力下，C 类多个 RAG 文档之间、C 与 D 对话历史之间普遍存在因果依赖（D 引用 C、文档间相互引用）。因此装配必须以 <strong>KV 依赖 DAG（KV Dependency DAG）</strong> 为约束：目录记录块间依赖边，只有依赖链已满足（上游块已就位）的模块才能拼接，跨模块依赖缺失时回源拉取或局部重算补齐。A/B 这类无上游依赖的"根模块"最适合异步预分发；D 依赖 C 等上游，只能在上游就位后装配。</p>
 
 <h3 id="s3-4">3.4 异步分发：从"几十秒"到"1–2 秒"甚至"零感知"</h3>
 <p>CDN 不需要实时同步整个会话。它只需要在后台<strong>异步地（Asynchronously）</strong>将高度共享的模块 A 和模块 B 分发到全球各个边缘节点的本地 Memory Pool 中。当边缘节点收到请求时，缺失的只是极小的动态模块：</p>
@@ -653,15 +656,15 @@ flowchart TB
 <ul>
   <li><strong>中心生成</strong>：在算力成本极低、电力充裕的中心节点（如偏远地区的大型数据中心），集中处理所有新出现的、长上下文的复杂 Agent 请求，生成高质量的 KV Cache；</li>
   <li><strong>低谷批量推送</strong>：利用夜间或网络低谷期，将这些"高价值 KV 资产"<strong>像分发软件更新一样，批量推送（Push）到全球各个边缘节点的 SSD 或 Memory Pool 中</strong>；</li>
-  <li><strong>边缘轻量服务</strong>：边缘节点只需要具备较小的显存，即可通过命中 CDN 预热的资产，提供极快的响应（就近 Decode 压 RTT 的收益见 §1.5）。</li>
+  <li><strong>边缘 Decode 服务</strong>：边缘节点装载<strong>完整模型权重</strong>做就近 Decode——KV 命中省的是 <strong>Prefill 算力</strong>，而非模型装载（权重/显存/内存带宽需求不变）。其成本优势来自"就近压 RTT（§1.5）+ 免本地大 Prefill 算力池 + 可用更便宜的 Decode 专用/异构硬件"，而非"少装东西"。</li>
 </ul>
-<p>三级拓扑的成本档位（相对单位成本）：</p>
+<p>三级拓扑的成本定位：</p>
 <div class="tablewrap"><table>
-  <thead><tr><th>层级</th><th>角色</th><th>硬件画像</th><th>相对成本档</th></tr></thead>
+  <thead><tr><th>层级</th><th>角色</th><th>硬件画像</th><th>成本定位</th></tr></thead>
   <tbody>
-    <tr><td>L2 中心源站</td><td>Prefill 生成 + 全量 KV 版本库</td><td>Rubin CPX/B200 级重算力池（万卡规模摊薄）</td><td>1.0（但单位算力成本最低）</td></tr>
-    <tr><td>L1 区域 POP</td><td>大容量 KV 驻留 + 跨域传输引擎</td><td>CXL 内存池 + NVMe，少量 GPU</td><td>0.3–0.5</td></tr>
-    <tr><td>L0 边缘节点</td><td>就近 Decode + 轻量增量 Prefill</td><td>小显存 Decode 卡 + SmartNIC</td><td>0.1–0.2</td></tr>
+    <tr><td>L2 中心源站</td><td>Prefill 生成 + 全量 KV 版本库</td><td>Rubin CPX/B200 级重算力池（万卡规模摊薄）</td><td>集中承担昂贵 Prefill，规模摊薄单次成本</td></tr>
+    <tr><td>L1 区域 POP</td><td>大容量 KV 驻留 + 跨域传输引擎</td><td>CXL 内存池 + NVMe，少量 GPU</td><td>存储密集，算力需求低</td></tr>
+    <tr><td>L0 边缘节点</td><td>完整权重的就近 Decode + 轻量增量 Prefill</td><td>Decode 异构/专用硬件 + SmartNIC（权重不减）</td><td>免大 Prefill 算力池，用异构 Decode 降本，权重装载不减</td></tr>
   </tbody>
 </table></div>
 <p>TCO 印证（§1.7）：跨集群 PrfaaS 模式 −15% ~ −25%，完整 KV Cache CDN −30% ~ −45%。P2P Prefill 池（部件⑧）是本创新点的<strong>可选激进扩展</strong>——用 Token 激励吸附全球长尾消费级算力充当"夜间 Prefill 工厂"（实现细节与挑战见 §6.2/§7.3）。</p>
@@ -673,7 +676,7 @@ flowchart TB
     subgraph TOPO["三级拓扑：算存地理分离"]
         CORE["L2 中心 Prefill DC&lt;br/&gt;算力洼地 · Rubin CPX/B200 重算力池&lt;br/&gt;高价值 KV 资产生成与版本化"]
         REG["L1 区域 POP ×N&lt;br/&gt;CXL 内存池 + NVMe 大容量驻留&lt;br/&gt;成本档 0.3–0.5"]
-        EDGE0["L0 边缘节点 ×N&lt;br/&gt;小显存 Decode + SmartNIC&lt;br/&gt;成本档 0.1–0.2"]
+        EDGE0["L0 边缘节点 ×N&lt;br/&gt;完整权重就近 Decode + SmartNIC&lt;br/&gt;免 Prefill 算力池·异构降本"]
     end
 
     NEWREQ --> CORE
@@ -736,7 +739,7 @@ flowchart TB
     <tr><td>边缘 POP</td><td>Regional / Edge 节点</td><td>缓存对象是模型绑定张量（须匹配模型版本、tokenizer、位置编码、LoRA）</td></tr>
     <tr><td>回源拉取</td><td>远端 Prefill 或 KV 块传输</td><td>可压缩（3.5–4.3×）、可<strong>前缀部分命中</strong>（URL 只能整文件匹配）</td></tr>
     <tr><td>内容预热</td><td>潮汐调度预分发</td><td>预热的是"计算结果"——预热即预计算</td></tr>
-    <tr><td>缓存失效</td><td>版本/租户策略失效</td><td>失效键 = 模型 + tokenizer + LoRA 指纹；错误不报 404，而是<strong>静默的生成质量劣化</strong></td></tr>
+    <tr><td>缓存失效</td><td>版本/租户策略失效</td><td>失效键 = <strong>KV 兼容性清单</strong>（模型/结构、tokenizer/RoPE、精度量化/TP-PP、LoRA/系统版本）；任一维度变更即整体失效，错误不报 404，而是<strong>静默的生成质量劣化</strong></td></tr>
   </tbody>
 </table></div>
 
@@ -745,8 +748,8 @@ flowchart TB
 <div class="tablewrap"><table>
   <thead><tr><th>#</th><th>部件</th><th>职责</th><th>主要支撑创新点</th><th>当前可用实现</th></tr></thead>
   <tbody>
-    <tr><td>①</td><td><strong>全局路由网关（Global Gateway / GSLB）</strong></td><td>请求接入；提取前缀/模块指纹；<strong>缓存亲和性路由（创新点一：查目录 → 强制路由到 KV 驻留节点）</strong>；SLA 分类（实时/异步）；基于"命中率 × 端到端时延 × 成本 × 潮汐 × 信任"加权决策；<strong>内嵌 T_net vs T_compute 动态博弈决策引擎（创新点三）</strong>；熔断与降级（fallback to local recompute）。传统 CDN 的智能 DNS + 全局负载均衡对应物</td><td>一、三</td><td>AIBrix 路由思想、GORGO</td></tr>
-    <tr><td>②</td><td><strong>KV 全局目录与索引（KV Catalog）</strong></td><td>前缀/<strong>PIC 模块</strong>→位置映射（分布式 Radix 树 + DHT 双层，模块级内容寻址）；内容寻址块 ID（哈希 = 模型 × tokenizer × 量化 × 分块内容）；元数据与版本管理；租约发放与失效广播；冷启动影子统计与热度画像（§6.5）</td><td>一、二</td><td>LMCache 内容寻址、etcd/一致性哈希</td></tr>
+    <tr><td>①</td><td><strong>全局路由网关（Global Gateway / GSLB）</strong></td><td>请求接入；提取前缀/模块指纹；<strong>缓存亲和性路由（创新点一：查目录 → 将 KV 驻留作为高权重路由因子）</strong>；SLA 分类（实时/异步）；基于"命中率 × 端到端时延 × 成本 × 潮汐 × 信任"加权决策；<strong>内嵌 T_net vs T_compute 动态博弈决策引擎（创新点三）</strong>；熔断与降级（fallback to local recompute）。传统 CDN 的智能 DNS + 全局负载均衡对应物</td><td>一、三</td><td>AIBrix 路由思想、GORGO</td></tr>
+    <tr><td>②</td><td><strong>KV 全局目录与索引（KV Catalog）</strong></td><td>前缀/<strong>PIC 模块</strong>→位置映射（分布式 Radix 树 + DHT 双层，模块级内容寻址）；<strong>不可变的 KV 兼容性清单 + 依赖 DAG</strong>——块 ID = 哈希（兼容性清单 × 分块内容），清单绑定模型权重/结构、tokenizer/prompt 模板/RoPE、精度量化/张量布局/TP-PP、LoRA/系统版本/引擎；块间因果依赖以 DAG 记录、按拓扑序装配（§3.3）；元数据与版本管理；租约发放与失效广播；冷启动影子统计与热度画像（§6.5）</td><td>一、二</td><td>LMCache 内容寻址、etcd/一致性哈希</td></tr>
     <tr><td>③</td><td><strong>潮汐调度与成本优化器（Tidal Scheduler）</strong></td><td>时区感知的 Prefill 放置（夜间闲置算力承接对侧白天峰值）；电价/算力价差套利；热点预测与<strong>主动预分发/批量预热（创新点二推什么、创新点四何时推，预分发窗口由周期/区域热度统计驱动，见 §6.5）</strong>；全局 TCO 优化</td><td>二、四</td><td>PrfaaS 双时间尺度调度、Preble 联合优化 [P12]</td></tr>
     <tr><td>④</td><td><strong>信任与验证引擎（Trust Engine）</strong>（P2P 模式专属）</td><td>节点信任评分（历史行为 × 硬件画像 × 带宽实测）；蜜罐 Prompt 注入与注意力采样校验；ZKP 验证；Token 激励结算</td><td>四（P2P 扩展）</td><td>研究前沿（§7.1/§7.3）</td></tr>
   </tbody>
@@ -847,7 +850,7 @@ sequenceDiagram
     U->>GW: 请求(前缀/模块指纹 + SLA=实时)
     GW->>CAT: 查询会话与模块驻留分布(亲和性路由 · 创新点一)
     CAT-->>GW: 亲和节点命中 92K/100K tokens(A/B/D 齐备)
-    GW->>E: 强制路由至 KV 驻留边缘节点(创新点一)
+    GW->>E: 优先路由至 KV 驻留边缘节点(创新点一)
     E->>R: 拉取缺失模块增量(RDMA/QUIC + CacheGen 流 · PIC 微模块 · 创新点二)
     R-->>E: 压缩 KV 块 → SmartNIC 解压 → 直写 HBM
     E->>E: 增量 Prefill(仅 8K 新 token)
@@ -944,7 +947,7 @@ sequenceDiagram
     GW->>CAT: 查询模块驻留(创新点一)
     CAT-->>GW: 亲和节点齐备 / 远端有缺失 / 全域未命中
     alt 亲和命中
-        GW->>E: 强制路由至 KV 驻留节点
+        GW->>E: 优先路由至 KV 驻留节点
         E->>E: PIC 模块装配(创新点二) + D 增量 Prefill
         E-->>U: TTFT ≈ 1–2 s 或零感知
     else 模块缺失但远端有
