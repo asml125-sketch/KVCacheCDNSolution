@@ -22,6 +22,7 @@
 | 9 | 新增部件⑫**质量遥测与金丝雀重算**；目录确立 **hint-not-truth** 原则；TCO 补底座成本并前置 Phase 0 验证 | 补强 | 评审·挑战 3/5/7 |
 | 10 | KV 指纹字段增设**必选/可选**分级标注（§2.2/§2.3）：`deps`/`boundary`/`pic_profile` 仅 PIC 需要，`layout` 仅 zero-copy 需要，未启用能力即整体省略 | 细化 | 需求补充 |
 | 11 | §4.5 流程时序一重构：冷未命中改为**中心 Prefill+Decode 本地闭环**（不实时卸载 Decode 到边缘）；网关**只返回 Endpoint、不代理转发**（先查后连语义）；`PrefillOrder`/`KVStreamPush(解码)` 替换为 `Allocate` + `RouteGrant` | 修正 | 需求补充 |
+| 12 | 目录访问控制收敛：**KV 目录仅全局网关可读写（单写点）**，非网关节点（中心/边缘/POP）改经 `SegmentReport`/`SessionReport`/`ReplicaReport` 上报网关、由网关统一写目录（§6.1/§6.2/§4.5/§4.6/§5.4/§6.4） | 架构原则 | 需求补充 |
 
 ---
 
@@ -590,7 +591,7 @@ sequenceDiagram
     Core-->>A: TokenStream（Decode 流式 · 中心本地完成 · 直连 Agent，无边缘中转）
     GW->>CAT: CatalogUpsert{fp → origin=core-07, req 绑定}
     GW->>CAT: HeatIncr{fps[], +1, sid, region=sg}
-    Core->>CAT: SessionStateUpdate{sid, primary=core-07, d_chain_head=fp(D1)}（D 链暂驻中心）
+    GW->>CAT: SessionUpsert{sid, primary=core-07, d_chain_head=fp(D1)}（网关据 SegmentReport 登记会话句柄）
 ```
 
 **消息与关键参数表：**
@@ -604,7 +605,7 @@ sequenceDiagram
 | `TokenStream` | Core→Agent | req_id、seq、tokens | Decode 由中心本地完成，流式直连 Agent，无边缘中转 |
 | `CatalogUpsert` | GW→CAT | fp→origin、req 绑定 | 请求级临时登记，转正式驻留须过 §6.4 准入 |
 | `HeatIncr` | GW→CAT | fps[]、+1、sid、region | 热度与共享度（distinct_sessions）累计 |
-| `SessionStateUpdate` | Core→CAT | sid、primary、d_chain_head | D 链暂驻中心；后续按 §3.5 D 随行复制下沉回区域 |
+| `SessionUpsert` | GW→CAT | sid、primary、d_chain_head | 网关依据 `SegmentReport` 登记会话句柄（**目录仅网关可写**）；D 链暂驻中心，后续按 §3.5 下沉 |
 
 **设计注记**：① `chunk_id` 内容寻址——两个请求各自生成同一 A，得到相同 chunk_id，**目录天然去重**；② `SegmentReport` 携带 prefill_gpu_s 与 cost_usd，直接进入 TCO 台账与 §6.4 准入评分（复用收益 = 后续命中 × 本次成本）；③ 请求级临时副本在会话结束后按准入评分决定转正或回收；④ **与早期版本的关键差异**：本流程**不做实时边缘 Decode 卸载**——冷未命中无亲和 D 链，Decode 端到端在中心闭环，KV 段经 `SegmentReport` 上报后，是否进入边缘/POP 驻留交由 §4.6 的**低频再分发**决策（"冷请求先在中心闭环，热度起来后再下沉"）；⑤ `RouteGrant` 携带的 `entry_token` 由 Core 离线校验（同 §3.4.b），若 Core 过载则拒绝并引导 Agent 重新 `RouteQuery`。
 
@@ -626,7 +627,8 @@ sequenceDiagram
     GW->>Core: PreDistOrder{plan_id, items=[{fp, chunk_ids[], target_pops, target_layer=L1, ttl=7d, dedup=true}], window=02:00–05:00_local, bw_budget_gbps=40, precedence=3}
     Core->>POP: KVStreamPush{plan_id, fp, chunks[]}（AIMD 拥塞控制 · 微块多源聚合）
     POP-->>Core: ChunkAck{chunk_id, bytes, rtt_ms, goodput_gbps}
-    POP->>CAT: CatalogUpsert{fp→pop-x, layer=L1, ttl, lease}
+    POP->>GW: ReplicaReport{fp, node=pop-x, layer=L1, ttl, lease}（副本落位上报）
+    GW->>CAT: CatalogUpsert{fp→pop-x, layer=L1, ttl, lease}
     POP->>GW: PlanFeedback{plan_id, done=18/20, bytes=5.8GB, duration=41min, failures=[{chunk_id, cause}]}
     GW->>E: 热度下沉（高峰前 T−30min，L1→L0 预分发，同消息族）
     Note over CAT,GW: 触发器三类：① 周期低谷窗口（夜间批发带宽）<br/>② 预峰窗口 T−30min（§6.4 周期性统计）<br/>③ HotRise 事件（新前缀热度阈值突破，事件驱动即时分发）
@@ -640,6 +642,8 @@ sequenceDiagram
 | `PreDistOrder` | GW→Core | plan_id、items[{fp, chunk_ids, target_pops, target_layer, ttl, dedup}]、window、bw_budget_gbps、precedence | **网关的分发决策本体**：哪些段、何时、去哪 |
 | `KVStreamPush` | Core→POP | plan_id、fp、chunks[] | Origin Store 取出已有段直接推送，**无需重算**（与 §4.5 的区别） |
 | `ChunkAck` | POP→Core | chunk_id、bytes、rtt、goodput | 逐块确认，反馈 B̂（EWMA 带宽估计，§5.2 复用） |
+| `ReplicaReport` | POP→GW | fp、node、layer、ttl、lease | POP 副本落位上报；**目录仅网关可写**，交由网关登记 |
+| `CatalogUpsert` | GW→CAT | fp→pop-x、layer、ttl、lease | 网关统一写目录（副本位置登记） |
 | `PlanFeedback` | POP→GW | plan_id、done/total、bytes、duration、failures | 窗口复盘 → 调整明日计划（升降层/撤分发） |
 
 **设计注记**：① 决策输入三类统计（§6.4）：周期性 When（定预峰窗口）、区域性 Where（定 target_pops：单区域热→单 POP 副本，全局热→多 POP + 中心全量）、特征性 What/Who（共享度是准入核心判据，共享度 ≈ 1 拒绝准入）；② AIMD 预算窗口防挤占日间业务带宽；③ 分发单位是 **chunk（内容寻址）** 而非模块——同一模块的热区头部 chunk 可先行，冷尾部缓发。
@@ -727,7 +731,8 @@ sequenceDiagram
     Core-->>E: TokenStream{req_id, seq}（Edge 作中继）
     E-->>A: TokenStream（客户端连接不变 · 无感切换）
     GW->>CAT: 降级审计{cause, node, ts, cost 归属=边缘池} + HeatIncr
-    Core->>CAT: SessionStateUpdate{sid, primary=core-07(临时), d_chain_head=fp(D8)}
+    Core->>GW: SessionReport{sid, d_chain_head=fp(D8)}（接管完成 · 上报会话态）
+    GW->>CAT: SessionUpsert{sid, primary=core-07(临时), d_chain_head=fp(D8)}
     Note over CAT,GW: 任务完成后：D 随行复制回流 pop-sg（闲时）· 亲和性回归用户区域
 ```
 
@@ -740,7 +745,8 @@ sequenceDiagram
 | `DegradationGrant` | E←GW | mode=CENTER_TAKEOVER、target、handoff_token、relay/keep_session | 控制边缘的续服方式（中继 or 迁移） |
 | `KVHandoffStream` | E→Core | sid、chunks[]（已算段，压缩）、d_chain_head | 部分上传省掉 60K token 重算；链路差时退化为全量重算 |
 | `TokenStream`（relay） | Core→E→A | req_id、seq | 客户端连接不变 |
-| `SessionStateUpdate` | Core→CAT | primary、d_chain_head | 后续亲和漂移 + D 回流的依据 |
+| `SessionReport` | Core→GW | sid、d_chain_head | 接管完成后上报会话态（**目录仅网关可写**） |
+| `SessionUpsert` | GW→CAT | sid、primary、d_chain_head | 网关登记接管后的会话句柄（临时 primary=core-07） |
 
 **两种客户端可见性（对应 §3.4 两方式）**：
 - **方式 a（网关直连）**：上图中 Edge 中继可省——网关直接把上游从 E 切到 Core，**客户端零改动零感知**（这是方式 a 的决定性优势）；
@@ -774,6 +780,7 @@ sequenceDiagram
 **V3 新增设计原则**：
 
 - **目录是建议（hint），不是真相**：目录查询结果可能瞬时过时（节点 2ms 前刚驱逐），一切以节点本地实际状态为准，miss 就地走 §5 降级——如同 GSLB 的最终一致性，这是架构公理而非补丁；
+- **目录仅网关可写（单写点）**：KV 目录（部件②）只接受全局网关（①）的读写。中心/边缘/POP/P2P 不直接触碰目录，而是把 KV 段（`SegmentReport`）、会话态（`SessionReport`）、副本落位（`ReplicaReport`/`PlanFeedback`）上报网关，由网关统一写目录——目录因此成为唯一事实源，消除多写者一致性难题，也便于访问控制与审计；
 - **KPI 修正**：北极星从"缓存命中率"改为**每美元节省的 Prefill token 数、TTFT SLO 达成率、输出散度 SLO**（命中 ≠ 免费）。
 
 ### 6.2 部件清单与职责（12 个部件，V3 新增⑫）
@@ -783,7 +790,7 @@ sequenceDiagram
 | # | 部件 | 职责 | 支撑创新点 | 可用实现 |
 |---|---|---|---|---|
 | ① | **全局路由网关（GSLB）** | 请求接入；RouteLookup 亲和路由（§3）；内嵌 T_net/T_compute/T_center 博弈与 **DegradationRequest 仲裁（§5.4）**；**PreDistPlan 分发决策（§4.6）**；熔断降级；级联降级阶梯 | 一、二、三 | AIBrix 路由思想、GORGO |
-| ② | **KV 全局目录（Catalog）** | **模块指纹（§2 规范）→ 位置映射**（Radix/DHT 双层）；兼容性清单 + 依赖 DAG；元数据/版本/租约失效；影子统计与热度画像（§6.4） | 一、二 | LMCache 内容寻址、etcd（分区所有权） |
+| ② | **KV 全局目录（Catalog）** | **唯一事实源、仅网关读写**：模块指纹（§2 规范）→ 位置映射（Radix/DHT 双层）；兼容性清单 + 依赖 DAG；元数据/版本/租约失效；影子统计与热度画像（§6.4）。非网关节点经 `SegmentReport`/`SessionReport`/`ReplicaReport` 上报网关后写入 | 一、二 | LMCache 内容寻址、etcd（分区所有权，网关单写入口） |
 | ③ | **潮汐调度与成本优化器** | PreDistOrder 编排（§4.6）；**D 随行复制（§3.5）**；电价/算力套利；热点预测与预峰窗口 | 二 | PrfaaS 双时间尺度调度 |
 | ④ | **信任与验证引擎**（P2P 专属，**非主线实验分支**） | 节点信任分；蜜罐注入；ZKP 验证；Token 结算 | 二（P2P 扩展） | 研究前沿（§7.3） |
 | ⑫ | **质量遥测与金丝雀重算（V3 新增）** | 采样流量"CDN 路径 vs 全量重算"语义 diff；金标集回归；装配上下文溯源标签（模块来源/版本/路径）；静默劣化告警与定责 | 全系统底座 | 需自研（评审补强） |
@@ -880,7 +887,8 @@ sequenceDiagram
     CAT-->>GW: AdmissionList{admit=[{fp, layer, ttl}], no_store=[...], warm_only=[...]}
     GW->>Core: PrefillOrder{admitted_fps[], codec=cg-L4, priority, budget_usd}
     Core->>POP: KVStreamPush{chunks[]}（夜间低谷窗口）
-    POP->>CAT: CatalogUpsert{fp→pop, layer, ttl}
+    POP->>GW: ReplicaReport{fp→pop, layer, ttl}（落位上报）
+    GW->>CAT: CatalogUpsert{fp→pop, layer, ttl}
     end
 
     rect rgb(245,240,250)
@@ -901,6 +909,8 @@ sequenceDiagram
 | `PrefixProfile` | CAT 内部 | hits、distinct_sessions、小时直方图、区域分布、共享度 | 三维统计：When（周期）/ Where（区域）/ What（特征） |
 | `AdmissionDecision` | CAT→GW | 评分、共享度、分级（L 层 × B 生命周期） | 共享度 ≥ 阈值（如 ≥5 独立会话/天）且评分 > 0 才准入 |
 | `PrefillOrder` | GW→Core | admitted_fps、codec、budget_usd | 首次**批量**生产正式 KV 资产（生产逻辑同 §4.5 的中心 Prefill，分发走 §4.6） |
+| `ReplicaReport` | POP→GW | fp、node、layer、ttl | 副本落位上报（**目录仅网关可写**） |
+| `CatalogUpsert` | GW→CAT | fp→pop、layer、ttl | 网关统一写目录（副本落位登记） |
 
 **新业务快速接入（绕过 7 天影子期）**——`ModuleDeclare` 结构声明：
 
