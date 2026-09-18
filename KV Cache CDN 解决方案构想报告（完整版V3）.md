@@ -20,6 +20,8 @@
 | 7 | 新增**冷启动三阶段时序图**（ShadowLog / AdmissionDecision 等消息与参数）+ ModuleDeclare 快速接入 | 新增 | 本版要求 1 |
 | 8 | T_net 公式补解压/缝合项（T_decomp + T_sew）、逐节点 R̂、hedged 拉取、级联降级阶梯 | 修正 | 评审·挑战 6 |
 | 9 | 新增部件⑫**质量遥测与金丝雀重算**；目录确立 **hint-not-truth** 原则；TCO 补底座成本并前置 Phase 0 验证 | 补强 | 评审·挑战 3/5/7 |
+| 10 | KV 指纹字段增设**必选/可选**分级标注（§2.2/§2.3）：`deps`/`boundary`/`pic_profile` 仅 PIC 需要，`layout` 仅 zero-copy 需要，未启用能力即整体省略 | 细化 | 需求补充 |
+| 11 | §4.5 流程时序一重构：冷未命中改为**中心 Prefill+Decode 本地闭环**（不实时卸载 Decode 到边缘）；网关**只返回 Endpoint、不代理转发**（先查后连语义）；`PrefillOrder`/`KVStreamPush(解码)` 替换为 `Allocate` + `RouteGrant` | 修正 | 需求补充 |
 
 ---
 
@@ -240,27 +242,36 @@ KV 指纹（Fingerprint）是全系统的寻址基础：目录以它为键（部
 
 ### 2.2 结构指纹：Compatibility Manifest 字段表
 
-| 字段 | 示例值 | 变更后果 |
-|---|---|---|
-| `model.id / weights` | `qwen3-72b-instruct` / 权重 SHA-256 前 16 位 | 全部失效 |
-| `arch` | 80 层 × 8 KV 头 × 128 维；RoPE base 1M + yarn-0.1 | 全部失效 |
-| `tokenizer` | tokenizer id + merges 文件哈希 | 全部失效 |
-| `chat_template` | `tpl-acme-agent-v3` | 全部失效 |
-| `kv_format` | dtype=BF16，codec=cachegen-L4，KV 量化=null | 需重编码 |
-| `layout` | TP=8，PP=1，head→shard 映射 v2 | 可转换（换布局需重排） |
-| `lora` | null 或 `lora-csr-77@v2` | LoRA 相关块失效 |
-| `engine` | vllm-0.11.2 + fa3 内核 | 默认失效；经"数值等价性认证"后可放宽（§2.6） |
-| `pic_profile` | epic-v1，边界重算 k=8，重旋转方案 | 同 |
+Compatibility Manifest 中每个字段都标注**必选/可选**两类，分级语义是本规范的核心约定：
+
+- **必选（一致）**：构成"结构性兼容底线"——任一必选字段缺失或不一致，该块即不可流用（跨块/跨请求整体失效）；
+- **可选（条件必选）**：仅当对应能力启用时才参与指纹与兼容判定。**未启用该能力的部署直接省略该字段**（canonical CBOR 中该键**不出现**，而非置 null），指纹更短、失效面更窄；一旦出现，则必须一致。
+
+两个典型：**不做 PIC → 省略 `deps` / `boundary` / `pic_profile`**；**不做 zero-copy → 省略 `layout`（收发端自行重排）**。
+
+| 字段 | 必选/可选 | 示例值 | 不一致的后果 |
+|---|---|---|---|
+| `model.id / weights` | **必选** | `qwen3-72b-instruct` / 权重 SHA-256 前 16 位 | 全部失效（KV 是权重的函数，语义根本不同） |
+| `arch` | **必选** | 80 层 × 8 KV 头 × 128 维；RoPE base 1M + yarn-0.1 | 全部失效（张量形状/位置编码不同，无法拼接） |
+| `tokenizer` | **必选** | `tk-qwen3-v15` + merges 哈希 | 全部失效（token 序列失配） |
+| `chat_template` | **必选**（防御性） | `tpl-acme-agent-v3` | 全部失效；若内容以 tokens_sha 精确匹配、模板差异未改变 token 序列，则不强制 |
+| `kv_format.dtype` | **必选** | BF16 / FP8 variant | 数值失配（跨精度复用需量化感知转换，默认不可流用） |
+| `kv_format.quant` | **可选**（做了 KV 量化才必选） | 未量化则省略 | 量化后数值失配，需重编码 |
+| `kv_format.codec` | **可选**（仅传输/存储编码） | `cachegen-L4` | 不影响 KV 本体——指纹哈希的是解压后内容，仅影响传输效率 |
+| `layout` | **可选**（zero-copy 直写/直读才必选） | TP=8, PP=1, head 映射 v2 | 布局不匹配需重排（repartition），可转换 |
+| `lora` | **可选**（加载 LoRA 才必选） | `lora-csr-77@v2` | LoRA 相关块失效 |
+| `engine` | **可选**（默认锁定，认证后可放开） | vllm-0.11.2 + fa3 | 默认零漂移要求锁定；数值等价认证后可跨引擎（§2.6 规则 5） |
+| `pic_profile` | **可选**（启用 PIC 才必选） | epic-v1, k=8 | 不做 PIC 时省略 |
 
 ### 2.3 内容指纹：ModuleContent 字段表
 
-| 字段 | 说明 |
-|---|---|
-| `type` | 模块类型标签：SYSTEM（A）/ TOOLS（B）/ RAG（C）/ HISTORY（D） |
-| `tokens_sha` | 归一化 token id 序列的 SHA-256（模块内容的身份） |
-| `len` | token 数 |
-| `deps` | 上游依赖模块指纹列表（KV 依赖 DAG 的边，§4.2） |
-| `boundary` | 边界元信息（首 token 是否需边界重算及其深度 k） |
+| 字段 | 必选/可选 | 说明 |
+|---|---|---|
+| `type` | **必选** | 模块类型标签：SYSTEM（A）/ TOOLS（B）/ RAG（C）/ HISTORY（D） |
+| `tokens_sha` | **必选** | 归一化 token id 序列的 SHA-256（模块内容的身份） |
+| `len` | **必选** | token 数（装配预算与命中计算） |
+| `deps` | **可选**（跨模块拼接/PIC 才必选） | 上游依赖模块指纹列表（KV 依赖 DAG 的边，§4.2）；**纯前缀缓存无需语义装配，省略** |
+| `boundary` | **可选**（边界重算缝合才必选） | 首 token 边界重算深度 k；固定顺序前缀不需要 |
 
 ### 2.4 具体示例（贯穿全文的运行样例）
 
@@ -276,13 +287,14 @@ KV 指纹（Fingerprint）是全系统的寻址基础：目录以它为键（部
               "rope": {"base": 1000000, "scaling": "yarn-0.1"}},
   "tokenizer": {"id": "tk-qwen3-v15", "merges_sha": "7ad3f2c1…"},
   "chat_template": "tpl-acme-agent-v3",
-  "kv_format": {"dtype": "BF16", "codec": "cachegen-L4", "quant": null},
+  "kv_format": {"dtype": "BF16", "codec": "cachegen-L4"},
   "layout":  {"tp": 8, "pp": 1, "head_map": "v2"},
-  "lora":    null,
   "engine":  {"name": "vllm", "version": "0.11.2", "kernel": "fa3"},
   "pic_profile": {"scheme": "epic-v1", "boundary_k": 8}
 }
 ```
+
+> 本例为**全特性部署**的全集 manifest（已启用 PIC、zero-copy 与 CacheGen 压缩）。未启用能力时，对应可选字段应**整体省略**（此前 `quant`/`lora` 置 null 处已删除，符合"省略而非 null"约定，见 §2.2）。
 
 → canonical CBOR（键排序、UTF-8 NFC）→ SHA-256 → **FP_struct = `9c41a7e2…`**（展示取前 16 hex）
 
@@ -333,12 +345,13 @@ SessionHandle: sess_9f2c71ab →
 
 ### 2.6 工程规则
 
-1. **canonical 序列化**：CBOR、键排序、UTF-8 NFC——同一清单在任何节点算出同一哈希；
+1. **canonical 序列化**：CBOR、键排序、UTF-8 NFC——同一清单在任何节点算出同一哈希；**可选字段缺失 = 键不出现（非 null），必选字段缺失 = 指纹无效、拒绝复用**；
 2. **128-bit 截断**：生日碰撞界 2^64，远超全局模块总量，wire 上 16 字节；
 3. **版本前缀字节**：指纹方案自身演进（ver 字段）；
 4. **生产者计算、消费者重验**：边缘收块时对内容重算哈希（trust-but-verify），防投毒与静默损坏；
 5. **数值等价性认证**：引擎/内核升级时，金标集上"新旧引擎输出散度 < 阈值"即可认证为同一 FP_struct（放宽 engine 绑定），避免每次 vLLM 升级全平台缓存作废——MVCC 双版本窗口只在未认证时启用；
-6. **目录条目携带 sew_cost**：缝合/重旋/解压成本随指纹登记，供 §5 博弈引擎与 §6.4 准入评分取用。
+6. **目录条目携带 sew_cost**：缝合/重旋/解压成本随指纹登记，供 §5 博弈引擎与 §6.4 准入评分取用；
+7. **可选字段一旦出现即参与哈希**：能力启用/关闭会改变 FP_struct——同一模型"纯前缀缓存形态"与"PIC 形态"是**两个不同的结构命名空间**，目录须分别登记，避免误流用（例如纯前缀形态不含 `deps`/`pic_profile`，其 FP_struct 与 PIC 形态不同）。
 
 ---
 
@@ -552,33 +565,32 @@ sequenceDiagram
 
 潮汐形态（四股潮汐叠加，保留自 V2）：算力潮汐（时区套利）、缓存潮汐（热点下沉/冷回收）、多模型共享潮汐（DroidSpeak 关键层复用）、成本潮汐（电价/算力/带宽价差动态跟踪）。
 
-### 4.5 流程时序一：冷未命中 — 中心推理与 KV 段上报（V3 新增，要求 4a）
+### 4.5 流程时序一：冷未命中 — 中心 Prefill+Decode 与 KV 段上报（网关仅返回 Endpoint）
 
-**场景**：新模块（如租户新知识库 C 或新版系统提示词 A）全域无 KV。网关按 §1.7 博弈（本地重算 vs 潮汐卸载）选择中心生成；中心推理完成后，**将 KV 段与对应 Hash 值上报网关进行复用统计**，KV 本体直推解码边缘。
+**场景**：新模块（如租户新知识库 C 或新版系统提示词 A）全域无 KV。网关按 §1.7 博弈选择中心生成，**只返回 Endpoint 给 Agent、不代理转发请求**（§3.4.b 先查后连语义）；中心 PrefillDC 在本地完成 **Prefill + Decode**（冷会话无亲和 D 链，§1.5 修正后单次 RTT 是一次性偏移，故**无需实时卸载 Decode 到边缘**）；推理完成后**将 KV 段与对应 Hash 上报网关进行复用统计**，供 §4.6 决策后续低频分发。
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as Agent（新加坡）
-    participant GW as ① 全局网关
+    participant GW as ① 全局网关（控制面 · 不代理转发）
     participant CAT as ② KV 目录
     participant T as ③ 潮汐调度器
-    participant Core as ⑤ 中心 Prefill DC
-    participant E as ⑦ 边缘节点 edge-sg-03
-    A->>GW: RouteRequest{sid, context_manifest, sla_ttft=4000ms}
+    participant Core as ⑤ 中心 Prefill DC core-07
+    A->>GW: RouteQuery{sid, context_manifest, sla_ttft=4000ms}（先查后连 §3.4.b）
     GW->>CAT: CatalogQuery{fps=[7f3a1b19, b2e88477, c41d5502], sid}
     CAT-->>GW: CatalogMiss{scope=global, reason=new_module}
     GW->>T: 询价{local_recompute_usd, tidal_offload_usd}
-    T-->>GW: 对侧时区夜间算力 −70% → 建议 Core 生成
-    GW->>Core: PrefillOrder{req_id, manifest_ref, content_ref, kv_spec{codec=cg-L4, layout=tp8}, decode_edge=edge-sg-03, deadline_ttft=4000ms, budget_usd=0.05}
+    T-->>GW: 对侧时区夜间算力 −70% → 建议 Core 本节点 Prefill + Decode
+    GW->>Core: Allocate{req_id, sid, kv_spec{codec=cg-L4}, deadline_ttft=4000ms, budget_usd=0.05}（分配预留 · 非转发请求）
+    GW-->>A: RouteGrant{endpoint=core-07, entry_token=JWT{sid, exp}, lease_ttl=60s}（仅返回 Endpoint）
+    A->>Core: POST /v1/agent/completions + entry_token + manifest（Agent 直连 Endpoint）
     Core->>Core: Prefill 计算（200K token）+ 分段编码<br/>seg_i = KVChunk{chunk_id = hash(FP_struct, seg_i 内容), token_range, codec, bytes}
-    Core->>E: KVStreamPush{req_id, chunks[], first_chunk_first=true}（流水线直推 · 边收边解压）
-    Core->>GW: SegmentReport{req_id, segments=[{fp, chunk_ids[], token_range, raw_bytes, comp_bytes, prefill_gpu_s, cost_usd}], FP_struct}
-    GW->>CAT: CatalogUpsert{fp → {origin=core-07, replica=edge-sg-03(temp,req 绑定)}}
+    Core->>GW: SegmentReport{req_id, segments=[{fp, chunk_ids[], raw_bytes, comp_bytes, prefill_gpu_s, cost_usd}], FP_struct}
+    Core-->>A: TokenStream（Decode 流式 · 中心本地完成 · 直连 Agent，无边缘中转）
+    GW->>CAT: CatalogUpsert{fp → origin=core-07, req 绑定}
     GW->>CAT: HeatIncr{fps[], +1, sid, region=sg}
-    E->>E: 收满启动 Decode（与传输重叠）
-    E-->>A: TokenStream（流式输出）
-    E->>CAT: SessionStateUpdate{sid, primary=edge-sg-03, d_chain_head=fp(D1)}
+    Core->>CAT: SessionStateUpdate{sid, primary=core-07, d_chain_head=fp(D1)}（D 链暂驻中心）
 ```
 
 **消息与关键参数表：**
@@ -586,13 +598,15 @@ sequenceDiagram
 | 消息 | 方向 | 关键参数 | 说明 |
 |---|---|---|---|
 | `CatalogQuery` | GW→CAT | fps[]、sid | 命中判定按指纹（结构+内容两级） |
-| `PrefillOrder` | GW→Core | manifest_ref、content_ref、kv_spec（codec/layout）、decode_edge、deadline_ttft、budget_usd | 指定编码档位与解码落点，附带成本与时延预算 |
-| `KVStreamPush` | Core→E | chunks[{chunk_id, token_range, layer_range, codec, bytes}]、first_chunk_first | 数据面直推，不经网关；首块先行启动 Decode |
-| `SegmentReport` | Core→GW | segments[{fp, chunk_ids[], raw/comp_bytes, prefill_gpu_s, cost_usd}]、FP_struct | **网关只收指纹与元数据（KB 级），不被 GB 级流量穿透**（控制/数据面分离）；这是复用统计的输入 |
-| `CatalogUpsert` | GW→CAT | fp→origin/replica、req 绑定 | 请求级临时登记，转正式驻留须过 §6.4 准入 |
+| `Allocate` | GW→Core | req_id、sid、kv_spec{codec}、deadline_ttft、budget_usd | 网关分配/预留中心节点（控制面，**非转发请求**），携带编码档位与成本预算 |
+| `RouteGrant` | GW→Agent | endpoint、entry_token(JWT{sid,exp})、lease_ttl、alternates | **网关只返回 Endpoint，不代理转发请求**（控制/数据面分离，§3.4.b） |
+| `SegmentReport` | Core→GW | segments[{fp, chunk_ids[], raw/comp_bytes, prefill_gpu_s, cost_usd}]、FP_struct | 中心推理后**上报 KV 段 + Hash 给网关做复用统计**；网关只收元数据（KB 级），不被 GB 级流量穿透 |
+| `TokenStream` | Core→Agent | req_id、seq、tokens | Decode 由中心本地完成，流式直连 Agent，无边缘中转 |
+| `CatalogUpsert` | GW→CAT | fp→origin、req 绑定 | 请求级临时登记，转正式驻留须过 §6.4 准入 |
 | `HeatIncr` | GW→CAT | fps[]、+1、sid、region | 热度与共享度（distinct_sessions）累计 |
+| `SessionStateUpdate` | Core→CAT | sid、primary、d_chain_head | D 链暂驻中心；后续按 §3.5 D 随行复制下沉回区域 |
 
-**设计注记**：① `chunk_id` 内容寻址——两个请求各自生成同一 A，得到相同 chunk_id，**目录天然去重**；② `SegmentReport` 携带 prefill_gpu_s 与 cost_usd，直接进入 TCO 台账与 §6.4 准入评分（复用收益 = 后续命中 × 本次成本）；③ 请求级临时副本在会话结束后按准入评分决定转正或回收。
+**设计注记**：① `chunk_id` 内容寻址——两个请求各自生成同一 A，得到相同 chunk_id，**目录天然去重**；② `SegmentReport` 携带 prefill_gpu_s 与 cost_usd，直接进入 TCO 台账与 §6.4 准入评分（复用收益 = 后续命中 × 本次成本）；③ 请求级临时副本在会话结束后按准入评分决定转正或回收；④ **与早期版本的关键差异**：本流程**不做实时边缘 Decode 卸载**——冷未命中无亲和 D 链，Decode 端到端在中心闭环，KV 段经 `SegmentReport` 上报后，是否进入边缘/POP 驻留交由 §4.6 的**低频再分发**决策（"冷请求先在中心闭环，热度起来后再下沉"）；⑤ `RouteGrant` 携带的 `entry_token` 由 Core 离线校验（同 §3.4.b），若 Core 过载则拒绝并引导 Agent 重新 `RouteQuery`。
 
 ### 4.6 流程时序二：网关预分发决策 — 哪些 KV 段、何时、发给哪些 POP（V3 新增，要求 4b）
 
@@ -886,7 +900,7 @@ sequenceDiagram
 | `CompletionMeta` | GW→CAT（旁路异步） | ttft_ms、prefill_tokens、cache_hit_flags | 复用收益与重算成本的原始证据 |
 | `PrefixProfile` | CAT 内部 | hits、distinct_sessions、小时直方图、区域分布、共享度 | 三维统计：When（周期）/ Where（区域）/ What（特征） |
 | `AdmissionDecision` | CAT→GW | 评分、共享度、分级（L 层 × B 生命周期） | 共享度 ≥ 阈值（如 ≥5 独立会话/天）且评分 > 0 才准入 |
-| `PrefillOrder` | GW→Core | admitted_fps、codec、budget_usd | 首次生产正式 KV 资产（走 §4.5 流程） |
+| `PrefillOrder` | GW→Core | admitted_fps、codec、budget_usd | 首次**批量**生产正式 KV 资产（生产逻辑同 §4.5 的中心 Prefill，分发走 §4.6） |
 
 **新业务快速接入（绕过 7 天影子期）**——`ModuleDeclare` 结构声明：
 
