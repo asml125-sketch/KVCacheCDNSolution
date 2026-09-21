@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>技术交底书 - 一种基于 KV Cache 可复用推理对象的广域 CDN 分发方法及系统</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; background: #f5f7fa; color: #1c2733; line-height: 1.8; font-size: 15px; padding: 24px; }
+  .paper { max-width: 960px; margin: 0 auto; background: #fff; padding: 52px 60px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.07); }
+  h1 { font-size: 27px; color: #0f2a5a; margin-bottom: 6px; }
+  .meta { color: #5a6570; font-size: 14px; margin-bottom: 26px; border-bottom: 2px solid #0e5fd8; padding-bottom: 16px; }
+  .kw { display: inline-block; background: #eef3fb; color: #0e5fd8; border-radius: 4px; padding: 1px 9px; font-size: 12.5px; margin: 0 6px 6px 0; }
+  h2 { font-size: 21px; color: #0f2a5a; margin: 34px 0 12px; padding-left: 10px; border-left: 4px solid #0e5fd8; }
+  h3 { font-size: 17px; color: #12386e; margin: 22px 0 8px; }
+  p { margin: 10px 0; }
+  strong { color: #0d1f3c; }
+  ol, ul { padding-left: 24px; margin: 10px 0; }
+  li { margin: 6px 0; }
+  code { background: #eef1f7; border-radius: 4px; padding: 1px 6px; font-size: .9em; font-family: Consolas, Menlo, monospace; color: #0f3a7d; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #dfe5ee; padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { background: #f2f6ff; color: #0f2a5a; }
+  pre.mermaid { background: #fbfcfe; border: 1px solid #e6eaf0; border-radius: 6px; padding: 16px; margin: 16px 0; overflow-x: auto; }
+  .fig-caption { color: #8494a8; font-size: 12.5px; text-align: center; margin: -6px 0 16px; }
+  .note { color: #6b737c; font-size: 13px; margin-top: 24px; border-top: 1px dashed #dde4ee; padding-top: 14px; }
+  .msg-note { font-size: 13px; color: #5a6570; margin: 10px 0 4px; }
+  ol.msgs li { margin: 6px 0; }
+  .new { font-weight: bold; color: #0e5fd8; }
+  .reuse { color: #6b737c; }
+  .enh { font-style: italic; color: #b45309; }
+  @media print { body { background: #fff; padding: 0; } .paper { box-shadow: none; max-width: 100%; padding: 24px; } }
+</style>
+</head>
+<body>
+<div class="paper">
+
+<h1>技术交底书</h1>
+<div class="meta">
+  <p style="margin:0 0 8px;"><strong>发明名称</strong>：一种基于 KV Cache 可复用推理对象的广域 CDN 分发方法及系统</p>
+  <div>
+  <span class="kw">KV Cache</span><span class="kw">内容寻址</span><span class="kw">亲和性路由</span><span class="kw">分段复用</span><span class="kw">经济博弈</span><span class="kw">SLA 降级</span><span class="kw">广域 CDN</span><span class="kw">边缘推理节点</span>
+  </div>
+</div>
+
+<h2>一、技术领域</h2>
+<p>本发明涉及人工智能推理基础设施与内容分发网络（CDN）的交叉领域，具体涉及大语言模型（LLM）推理过程中的 KV Cache（Key-Value Cache，键值缓存）在广域网络中作为可复用"推理对象"的生成、分段、统计、分发、路由复用与降级调度方法及系统。</p>
+
+<h2>二、背景技术</h2>
+<h3>2.1 KV Cache 的背景</h3>
+<p>Transformer 类大模型在生成（Decode）阶段，每个 token 都要与历史上下文的 Key/Value 向量做注意力计算。为避免每个生成步都重算历史，推理引擎把这些历史 Key/Value 向量缓存下来，即 KV Cache，其体量与上下文长度成正比。</p>
+<p>LLM 推理瓶颈已由"计算密集"转向"访存与状态密集"：长上下文推理中 KV 相关内存、传输与重算开销占推理总成本 50% 以上；KV 读写带宽线性增长且每个解码步都要全量触碰，瓶颈从 FLOPs 转移到显存带宽与显存容量（"显存墙"）。</p>
+<h3>2.2 问题根源（三重爆炸）</h3>
+<ol>
+  <li><strong>上下文窗口爆炸</strong>：4K→128K→1M token。以 GQA-70B 模型（每 token 约 320 KB KV）计，100K 上下文单请求 KV 达 32 GB，压缩后仍需约 8 GB；百并发轻易突破 TB 级，远超单卡 HBM（80/144 GB）。</li>
+  <li><strong>复用浪费爆炸</strong>：多轮对话、系统提示词、RAG、工具定义等存在大量重复前缀，重复 Prefill 造成的算力浪费达 30–70%——"一次计算理应多次消费"。</li>
+  <li><strong>地理分布爆炸</strong>：全球/全国部署要求就近服务；算力异构（Prefill 吃算力、Decode 吃带宽）导致两类负载天然不在同一机房；区域电价/算力成本差 2–5 倍，时区潮汐造成利用率波动。</li>
+</ol>
+<p>当 KV Cache 被逐层挤出单机（显存→内存→SSD→集群→广域网），其核心特征与 1990 年代静态内容分发同构——一个 CDN 问题就此成立。</p>
+
+<h3>2.3 现有技术及其缺陷</h3>
+<table>
+<thead><tr><th>现有技术</th><th>技术路线</th><th>核心机制</th><th>具体缺陷与不足</th></tr></thead>
+<tbody>
+<tr><td>vLLM PagedAttention / SGLang RadixAttention</td><td>单集群内跨请求前缀复用</td><td>以"连续 token 序列"为缓存单位，命中即复用</td><td>限定单 RDMA 域，无法跨地域；缓存单位是完整连续前缀，无法只复用离散高共享片段</td></tr>
+<tr><td>跨 DC Prefill 卸载（PrfaaS 等）</td><td>单向卸载</td><td>中心算力池集中 Prefill，KV 压缩后经 WAN 传回本地 decode</td><td>是"单向卸载"而非"分发"，无多级缓存/就近服务/多节点差异化分发，无广域路由与复用统计</td></tr>
+<tr><td>同机房分布式内存池（Mooncake 等）</td><td>集群级 KV 池化</td><td>VRAM/DRAM/SSD 三级分层 + 请求触发 Pull</td><td>假设高速稳定网络；平移到 1–10G WAN 时，实时拉取大 KV 为灾难（80s vs 10s 本地重算）</td></tr>
+</tbody>
+</table>
+<p><strong>缺陷总结</strong>：现有技术要么<strong>跨不了地域</strong>（前缀缓存/内存池），要么<strong>只在单向上传、缺多节点分发与广域调度</strong>（PrfaaS）。没有任何方案把 KV Cache 当作"内容寻址、可按段统计并分发到不同节点、再按 SLA+成本择优路由、并据经济博弈降级"的广域可复用对象。</p>
+
+<h2>三、发明内容</h2>
+<h3>3.1 要解决的技术问题</h3>
+<p>本发明要解决的是：<strong>在广域、受限且抖动的网络环境下，如何将 LLM 推理的 KV Cache 作为"可复用推理对象"进行跨节点、跨地域的高效共享</strong>，以同时解决——① 显存墙（单请求 KV 突破单机容量）；② 地理墙（各地域都堆高配 GPU 成本极高）；③ 跨域复用（"连续前缀"粒度无法精细复用离散高共享片段）；④ SLA 稳定（广域抖动下确定性"有缓存就拉"会崩溃）。</p>
+
+<h3>3.2 技术方案（核心）</h3>
+<p>总体思路：把 KV Cache 视为<strong>内容寻址、可按段独立寻址与复用的"推理对象"</strong>，在广域 CDN 网络中，以"全局网关 + KV 目录 + 中心节点 + 多个边缘推理节点"的分层结构承载，并以三大创新机制解决上述问题。</p>
+<ul>
+  <li><strong>中心节点</strong>（中心 Prefill DC）：生产 KV 段（Prefill），并作兜底推理节点；</li>
+  <li><strong>边缘推理节点</strong>：本发明将传统 CDN 的"区域 POP"与"边缘节点"<strong>合并为同一类节点</strong>，统一称"边缘推理节点"，负责持有 KV 段副本、就近命中并 Decode；</li>
+  <li><strong>全局网关（含 KV 目录）</strong>：唯一读写 KV 目录，承担亲和路由、分段分发决策、经济/SLA 博弈仲裁。</li>
+</ul>
+<p>KV Cache 以"段"为单位组织，段以<strong>内容寻址指纹</strong>标识：<code>fp = hash(兼容性清单 × 段内容)</code>。不同类型边缘推理节点可持有不同的 KV 段（非全量复制）。</p>
+
+<pre class="mermaid">
+flowchart TB
+    U(("推理客户端 / Agent"))
+    GW["全局网关<br/>KV 目录 + 亲和路由 + 博弈决策 + 分发决策"]
+    CENTER["中心节点（中心 Prefill DC）<br/>生产 KV 段 · 兜底推理"]
+    E1["边缘推理节点 A<br/>持有段 {A,B,部分C}"]
+    E2["边缘推理节点 B<br/>持有段 {A,C,部分D}"]
+    E3["边缘推理节点 C<br/>持有段 {B,部分C}"]
+    U -->|RouteQuery / RouteGrant（方式 b）| GW
+    GW -.->|目录读写 / 分发决策| CENTER
+    CENTER ==>|预分发不同 KV 段| E1
+    CENTER ==>|预分发不同 KV 段| E2
+    CENTER ==>|预分发不同 KV 段| E3
+    U -.->|直连选中节点| E1
+    E1 ==>|TokenStream| U
+    CENTER -.->|SegmentReport 上报段指纹| GW
+</pre>
+<div class="fig-caption">图 1 · 总体逻辑架构（中心节点 + 边缘推理节点 + 全局网关/KV 目录）</div>
+
+<h4>创新点一：亲和性路由（方式 b 为主路径）</h4>
+<p><strong>要解决的问题</strong>：现有 GSLB 按"地理就近"分配；现有缓存路由以"延迟最优"为目标、缓存分布当作输入。二者都无法回答"哪个节点对我这个会话/上下文复用最多"。</p>
+<ol>
+  <li>全局网关维护 KV 目录，目录以段指纹为键，记录每个段驻留在哪些边缘推理节点。</li>
+  <li>客户端发起请求前，向网关发送 <code>RouteQuery{会话ID, fps[], SLA, geo}</code>。</li>
+  <li>网关查目录，得各候选节点的命中段集合与命中 token 数。</li>
+  <li>网关按综合评分选<strong>复用最多、最合适</strong>的节点：<strong>复用程度</strong>（命中段总 token ÷ 缺失段重算成本）×<strong>SLA</strong>（首字时延、吞吐）×<strong>成本</strong>（算力/带宽单价）——既非地理最近，也非命中率唯一。</li>
+  <li>网关返回 <code>RouteGrant{Endpoint, 授权 token, decision 决策依据}</code>，<strong>只返回 Endpoint、不代理转发</strong>（方式 b，默认主路径）；客户端直连所选节点。</li>
+  <li>节点校验授权后，命中已持有段，仅对缺失段增量 Prefill，再 Decode 流式返回。</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as 推理客户端
+    participant GW as 全局网关
+    participant CAT as KV 目录
+    participant E as 边缘推理节点（选中）
+    C->>GW: P1：RouteQuery{sid, fps=[A,B,C], sla, geo}
+    GW->>CAT: P2：按指纹查各节点持有段
+    CAT-->>GW: P3：命中分布{E1: A/B/C 全中, E3: 仅 B}
+    GW->>GW: P4：评分 = 复用程度 × SLA × 成本 → 选 E1
+    GW-->>C: P5：RouteGrant{endpoint=E1, decision={target, hit_tokens, reason}}
+    C->>E: P6：直连 + entry_token + 请求
+    E-->>C: P7：TokenStream（仅增量 Prefill 缺失段）
+</pre>
+<div class="fig-caption">图 2 · 亲和性路由时序（方式 b 主路径）</div>
+
+<div class="msg-note">消息说明（<code>P1</code>–<code>P7</code> 对应图中消息序号；字体：<span class="new">蓝·加粗=新增</span> / <span class="enh">橙·斜体=增强</span> / <span class="reuse">灰=复用已有流程</span>）：</div>
+<ol class="msgs">
+  <li><strong>P1</strong>：<span class="new">【新增】<code>RouteQuery</code></span> —— 推理客户端→全局网关，携带"会话ID、上下文各段指纹 fps[]、SLA 预算、geo"。本专利新增的"先查后连"查询消息，替代"客户端直接连就近节点"的既有行为。</li>
+  <li><strong>P2</strong>：<span class="reuse">【复用】<code>目录查询</code></span> —— 网关→KV 目录，按段指纹查询各节点持有段，复用内容寻址目录（如 LMCache）的既有查找流程。</li>
+  <li><strong>P3</strong>：<span class="reuse">【复用】<code>命中分布返回</code></span> —— KV 目录→网关，返回各节点命中的段集合。</li>
+  <li><strong>P4</strong>：<span class="new">【新增】<code>综合评分择优选节点</code></span> —— 网关内部决策，按"复用程度 × SLA × 成本"三因子打分，从持有不同段的候选节点中选出复用最多、最合适者——本专利路由决策的核心新增逻辑。</li>
+  <li><strong>P5</strong>：<span class="new">【新增】<code>RouteGrant</code></span> —— 网关→客户端，只返回"目标 Endpoint + 授权 token + decision 决策依据"，不代理转发（方式 b 主路径）。</li>
+  <li><strong>P6</strong>：<span class="enh">【增强】<code>直连 + entry_token</code></span> —— 客户端→边缘推理节点，复用"DNS 解析后直连"模式，增强为携带授权 token（节点离线验签）。</li>
+  <li><strong>P7</strong>：<span class="enh">【增强】<code>TokenStream</code></span> —— 边缘推理节点→客户端，复用既有解码流式输出，增强为"仅对缺失段做增量 Prefill"（命中段不重算）。</li>
+</ol>
+
+<h4>创新点二：基于不同 KV 段的统计复用与分发</h4>
+<p><strong>要解决的问题</strong>：现有缓存"什么热门缓存什么"或"全量复制到所有节点"，前者命中率低、后者存储传输浪费；且缓存单位是"完整连续前缀"，无法按共享度精细取舍。</p>
+<ol>
+  <li><strong>分段</strong>：按共享度把上下文切为若干段（系统提示词段、工具定义段、私有文档段、会话历史段等），每段以内容寻址指纹标识。</li>
+  <li><strong>上报统计</strong>：中心生产 KV 段后上报 <code>SegmentReport{段指纹, 内容哈希, 耗时, 成本}</code>；网关累计每段的<strong>命中次数、独立会话数（共享度）、区域分布、时段周期</strong>。</li>
+  <li><strong>准入评分</strong>：<code>准入评分 = 期望复用收益 − 存储成本 − 传输成本 − 缝合成本</code>；评分 &gt;0 且共享度达标才纳入分发。</li>
+  <li><strong>差异化分发</strong>：网关据统计决定哪些段、何时、分发到哪些边缘推理节点——不同节点收到<strong>不同的段</strong>（按区域热度/业务归属），而非全量复制。</li>
+  <li><strong>异步预分发</strong>：夜间/网络低谷窗口执行，把传输从请求关键路径摘除。</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+    participant CENTER as 中心节点
+    participant GW as 全局网关
+    participant CAT as KV 目录
+    participant E as 边缘推理节点
+    CENTER->>GW: P1：SegmentReport{段指纹, 内容哈希, 成本}
+    GW->>CAT: P2：复用统计聚合（命中/共享度/区域/时段）
+    GW->>GW: P3：准入评分 + 分发决策（哪些段→哪些节点→何时）
+    GW->>CENTER: P4：PreDistOrder{段集合, 目标节点, 时间窗}
+    CENTER->>E: P5：KVStreamPush{段指纹, 数据}（低谷异步）
+    E->>GW: P6：ReplicaReport{段指纹, 节点, TTL}
+    GW->>CAT: P7：副本登记
+</pre>
+<div class="fig-caption">图 3 · 分段统计复用与分发时序</div>
+
+<div class="msg-note">消息说明（<code>P1</code>–<code>P7</code> 对应图中消息序号；字体约定同创新点一）：</div>
+<ol class="msgs">
+  <li><strong>P1</strong>：<span class="new">【新增】<code>SegmentReport</code></span> —— 中心节点→网关，上报"段指纹、内容哈希、生产成本"，作为复用统计的原始数据源。</li>
+  <li><strong>P2</strong>：<span class="enh">【增强】<code>复用统计聚合</code></span> —— 网关→KV 目录，在内容寻址目录上增强"命中次数、独立会话数（共享度）、区域分布、时段周期"统计维度（原目录只存位置，不存复用画像）。</li>
+  <li><strong>P3</strong>：<span class="new">【新增】<code>准入评分 + 分发决策</code></span> —— 网关内部，按"准入评分 = 复用收益 − 存储 − 传输 − 缝合"阈值筛选，并决定"哪些段→哪些边缘推理节点→何时"差异化分发。</li>
+  <li><strong>P4</strong>：<span class="new">【新增】<code>PreDistOrder</code></span> —— 网关→中心节点，下发"段集合、目标节点列表、时间窗、带宽预算"的分发指令。</li>
+  <li><strong>P5</strong>：<span class="reuse">【复用】<code>KVStreamPush</code></span> —— 中心节点→边缘推理节点，复用"内容批量下发/预热"（类比 CDN 软件更新式 Push）的既有流程，按段差异推送。</li>
+  <li><strong>P6</strong>：<span class="new">【新增】<code>ReplicaReport</code></span> —— 边缘推理节点→网关，回传"段指纹、节点、TTL"副本落位（目录仅网关可写）。</li>
+  <li><strong>P7</strong>：<span class="reuse">【复用】<code>副本登记</code></span> —— 网关→KV 目录，复用目录登记流程，把新副本位置写回目录。</li>
+</ol>
+
+<h4>创新点三：经济与 SLA 博弈后的降级（决策结果外显）</h4>
+<p><strong>要解决的问题</strong>：局域网内"有缓存就拉"是确定性逻辑；但广域网带宽抖动不可预测，一条名义 10 Gbps 链路拥塞时可退化到 0.1 GB/s。确定性拉取会忠实等待 15s 跨域传输，而本地重算只需 1–2s。</p>
+<ol>
+  <li><strong>实时三候选估算</strong>（边缘推理节点在请求到达/传输中持续评估）：<code>T_local</code>（本地重算）、<code>T_fetch</code>（跨节点拉段）、<code>T_center</code>（降级中心接管）。</li>
+  <li><strong>博弈</strong>：以 SLA 预算（首字时延、吞吐下限）与成本为约束，选最优者。</li>
+  <li><strong>动作二分</strong>：满足 SLA 且划算 → <strong>本节点推理</strong>；否则 → <code>DegradationRequest</code> 上报网关 → 网关 <code>TakeoverOrder</code> 中心 → <strong>降级由中心节点推理</strong>。</li>
+  <li><strong>决策外显（外部特征）</strong>：博弈结果写入外部接口——<code>decision.action ∈ {LOCAL, CENTER_TAKEOVER}</code>、响应头 <code>X-Inference-Node</code>、降级时流迁移重定向（新 Endpoint + resume_token）。友商采用时，抓包/观测接口即可取证。</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+    participant C as 推理客户端
+    participant E as 边缘推理节点
+    participant GW as 全局网关
+    participant CT as 中心节点
+    C->>E: P1：推理请求
+    E->>E: P2：博弈：T_local / T_fetch / T_center vs SLA·成本
+    alt 满足 SLA → 本节点推理
+        E-->>C: P3：TokenStream（响应带 X-Inference-Node=E）
+    else 不满足 SLA → 降级中心
+        E->>GW: P4：DegradationRequest{options, recommend=CENTER}
+        GW->>CT: P5：TakeoverOrder（中心接管）
+        GW-->>C: P6：重定向{decision.action=CENTER_TAKEOVER, 新 endpoint}
+        CT-->>C: P7：TokenStream（响应带 X-Inference-Node=CENTER）
+    end
+</pre>
+<div class="fig-caption">图 4 · 经济/SLA 博弈与降级时序（含外部特征）</div>
+
+<div class="msg-note">消息说明（<code>P1</code>–<code>P7</code> 对应图中消息序号；字体约定同创新点一）：</div>
+<ol class="msgs">
+  <li><strong>P1</strong>：<span class="reuse">【复用】<code>推理请求</code></span> —— 客户端→边缘推理节点，复用既有推理请求流程。</li>
+  <li><strong>P2</strong>：<span class="new">【新增】<code>博弈评估</code></span> —— 边缘推理节点内部，实时估算 T_local / T_fetch / T_center 三候选耗时，对照 SLA 预算与成本择优——本专利新增的"经济+SLA 博弈"决策逻辑。</li>
+  <li><strong>P3</strong>：<span class="enh">【增强】<code>本节点推理 TokenStream</code></span> —— 边缘推理节点→客户端，复用既有解码流，增强为响应头携带 <code>X-Inference-Node=本节点</code>、<code>decision.action=LOCAL</code> 外显字段。</li>
+  <li><strong>P4</strong>：<span class="new">【新增】<code>DegradationRequest</code></span> —— 边缘推理节点→网关，上报"三候选评估 + 建议降级 CENTER"，请求仲裁。</li>
+  <li><strong>P5</strong>：<span class="new">【新增】<code>TakeoverOrder</code></span> —— 网关→中心节点，下发接管指令（含缺失段、增量补算方式）。</li>
+  <li><strong>P6</strong>：<span class="new">【新增】<code>降级重定向 + decision.action=CENTER_TAKEOVER</code></span> —— 网关→客户端，下发流迁移重定向（新 Endpoint + resume_token）并外显博弈结果——外显机制本身为本专利新增，是核心取证点。</li>
+  <li><strong>P7</strong>：<span class="enh">【增强】<code>中心推理 TokenStream</code></span> —— 中心节点→客户端，复用解码流，增强为响应头 <code>X-Inference-Node=CENTER</code>。</li>
+</ol>
+
+<h3>3.3 有益效果</h3>
+<ol>
+  <li><strong>跨域硬传清零、TTFT 大幅下降</strong>：亲和路由用 KB 级路由决策替代 GB 级跨域传输，命中时 TTFT 从 10s 级压到 1–2s 级；较 1Gbps 公网硬传（80s）提升数十倍。</li>
+  <li><strong>复用算力、降低 TCO</strong>：分段统计分发只推高共享段，多次命中摊薄一次 Prefill，复用浪费降 30–70%；中心集中 Prefill、边缘低成本 Decode。</li>
+  <li><strong>广域 SLA 稳定</strong>：经济/SLA 博弈为不可靠广域网兜底——宁重算/上移，绝不硬等。</li>
+  <li><strong>可举证</strong>：三大创新点决策结果均显式暴露于外部接口，便于侵权判定与取证。</li>
+</ol>
+
+<h2>四、附图说明</h2>
+<ul>
+  <li>图 1：总体逻辑架构图（中心节点 + 边缘推理节点 + 全局网关/KV 目录）；</li>
+  <li>图 2：创新点一亲和性路由时序图（方式 b 主路径）；</li>
+  <li>图 3：创新点二分段统计复用与分发时序图；</li>
+  <li>图 4：创新点三经济/SLA 博弈与降级时序图（含外部特征）。</li>
+</ul>
+
+<h2>五、具体实施方式（可复现实施）</h2>
+<p><strong>系统组成</strong>：全局网关（含 KV 目录、路由模块、分发模块、仲裁模块）、至少一个中心节点、多个边缘推理节点；物理上边缘推理节点合并了"区域 POP 与边缘"。</p>
+<p><strong>实施一（亲和路由）</strong>：客户端维护会话 ID 与上下文各段指纹；请求前调 <code>RouteQuery</code>；网关查目录得各节点命中段集合，按 <code>score = w1·复用程度 + w2·SLA 满足度 + w3·成本倒数</code> 排序取最高者；返回 <code>RouteGrant{endpoint, entry_token(含会话/节点/过期的 JWT), decision}</code>；客户端直连；节点离线验签、增量 Prefill 缺失段。</p>
+<p><strong>实施二（分段统计分发）</strong>：中心 Prefill 后按共享度切段、算指纹，上报 <code>SegmentReport</code>；网关按指纹聚合命中/共享度/区域/时段，计算准入评分；达标段进入分发计划（目标节点、时间窗、带宽预算），低谷异步推送到指定边缘推理节点，节点落盘后 <code>ReplicaReport</code> 回传、网关写目录。</p>
+<p><strong>实施三（博弈降级）</strong>：边缘推理节点对每个请求评估 <code>T_local/T_fetch/T_center</code>；若本地/拉段满足 SLA 则本节点推理（响应头 <code>X-Inference-Node=本节点</code>、<code>decision.action=LOCAL</code>）；否则 <code>DegradationRequest</code> → 网关 <code>TakeoverOrder</code> 中心 → 中心增量接管后流式返回（<code>decision.action=CENTER_TAKEOVER</code>、<code>X-Inference-Node=中心</code>），或向客户端下发流迁移重定向。</p>
+
+<h2>六、技术保护点汇总（供权利要求参考）</h2>
+<ol>
+  <li><strong>亲和性路由方法</strong>：以段指纹为索引的全局 KV 目录；按"复用程度 × SLA × 成本"从持有不同段的节点中选复用最多、最合适者；先查后连（网关只返 Endpoint、客户端直连）；RouteGrant 携带 <code>decision</code> 决策依据字段。</li>
+  <li><strong>分段统计复用与分发方法</strong>：把 KV 按共享度切段、内容寻址；按命中/共享度/区域/时段统计；准入评分阈值筛选；差异化分发不同段给不同边缘推理节点（低谷异步预分发）。</li>
+  <li><strong>经济/SLA 博弈与降级方法</strong>：对每个请求实时估算 T_local/T_fetch/T_center 博弈，SLA+成本约束下本节点推理或经仲裁降级中心推理；博弈结果外显（decision.action、X-Inference-Node、流迁移重定向），形成可取证外部特征。</li>
+</ol>
+
+<div class="note">注：本交底书为初稿，正式提交前请专利代理人复核；量化指标为依据现有论文与测算的预期值，不作为专利授权承诺。</div>
+
+</div>
+</body>
+</html>

@@ -11,7 +11,7 @@
 
 | # | 变更 | 类型 | 来源 |
 |---|---|---|---|
-| 1 | 修正 §1.5 解码 RTT 经济学（V2 混淆延迟与吞吐），重构边缘层价值论证与拓扑结论 | **勘误** | 架构评审·挑战 1 |
+| 1 | 修正 §1.6 解码 RTT 经济学（V2 混淆延迟与吞吐），重构边缘层价值论证与拓扑结论 | **勘误** | 架构评审·挑战 1 |
 | 2 | 澄清"新会话/亲和 miss"的真实缺失量（新会话缺 C 全量、亲和 miss 缺 D 全量），新增 **D 随行复制**机制 | 勘误+机制 | 评审·挑战 2 |
 | 3 | 新增 **§2 KV 指纹与兼容性清单规范**（组成、字段表、A/B/C/D 实例、会话句柄） | 新增 | 本版要求 2 |
 | 4 | 创新点一新增**请求接口样例**（结构声明 API）与**两种路由实现方式**（网关直连式 / 先查后连式），含时序图 | 新增 | 本版要求 3 |
@@ -23,6 +23,9 @@
 | 10 | KV 指纹字段增设**必选/可选**分级标注（§2.2/§2.3）：`deps`/`boundary`/`pic_profile` 仅 PIC 需要，`layout` 仅 zero-copy 需要，未启用能力即整体省略 | 细化 | 需求补充 |
 | 11 | §4.5 流程时序一重构：冷未命中改为**中心 Prefill+Decode 本地闭环**（不实时卸载 Decode 到边缘）；网关**只返回 Endpoint、不代理转发**（先查后连语义）；`PrefillOrder`/`KVStreamPush(解码)` 替换为 `Allocate` + `RouteGrant` | 修正 | 需求补充 |
 | 12 | 目录访问控制收敛：**KV 目录仅全局网关可读写（单写点）**，非网关节点（中心/边缘/POP）改经 `SegmentReport`/`SessionReport`/`ReplicaReport` 上报网关、由网关统一写目录（§6.1/§6.2/§4.5/§4.6/§5.4/§6.4） | 架构原则 | 需求补充 |
+| 13 | 全文一致性收敛：**方式 a 定为备选、方式 b 为主路径**；中心**默认可处理租户请求**（除非特别约定+接受 SLA 降级）；补模块/段/块粒度定义、亲和命中主路径时序图、③内嵌归属、中心 N+1、统计口径统一、primary 复位闭环、样例参数校正（§3.4/§3.6/§4.2/§4.4/§4.5/§5.4/§6.2–§6.4） | 一致性 | 全文审查 |
+| 14 | 7 张时序图下方补充**消息逐条说明（P1…Pn）**：每条标注「网元 A 发送 XX 消息给网元 B + 目的 + 关键参数与作用」，与 mermaid autonumber 对齐（§3.4a/b、§3.6、§4.5、§4.6、§5.4、§6.4） | 补全 | 需求补充 |
+| 15 | 时序图改为显式 **P1/P2…前缀**（移除 autonumber）；新增 **§1.2 总体方案概述**（一句话定义 + 五步主链 + 两条红线 + 三大支柱 + 一张全局图 + 适用对象），并顺移原 §1.2–§1.7 → §1.3–§1.8、全文交叉引用同步重编号 | 补全 | 需求补充 |
 
 ---
 
@@ -55,7 +58,7 @@ V3 将原四大创新点重组为**三大创新点**（原二与原四合并，�
 
 ### 0.3 报告结构与阅读地图
 
-**§1** 问题背景与全部可行性测算（含 V3 修正后的解码侧经济学）→ **§2** KV 指纹与兼容性清单规范（全系统寻址基础，V3 新增）→ **§3–§5** 三大创新点（含接口样例与消息时序图）→ **§6** 总体架构、部件清单与冷启动流程 → **§7** 挑战全景与开放问题 → **§8** 结论与分阶段落地路径 → 附录 A–E。
+**§1** 问题背景与可行性测算（含 **§1.2 总体方案概述**、V3 修正后的解码侧经济学）→ **§2** KV 指纹与兼容性清单规范（全系统寻址基础，V3 新增）→ **§3–§5** 三大创新点（含接口样例与消息时序图）→ **§6** 总体架构、部件清单与冷启动流程 → **§7** 挑战全景与开放问题 → **§8** 结论与分阶段落地路径 → 附录 A–E。
 
 ---
 
@@ -73,7 +76,73 @@ V3 将原四大创新点重组为**三大创新点**（原二与原四合并，�
 
 当缓存被逐层挤出单机——GPU 显存 → CPU DRAM → NVMe → RDMA 集群 → 广域网——其核心特征与 1990 年代的静态内容分发完全同构，一个 CDN 问题就此成立。但**问题成立，不等于"用带宽硬传"的解法成立**——正确的解法是 §3–§5 的范式重构。
 
-### 1.2 核心论点与本质同构
+### 1.2 总体方案概述（本方案是什么）
+
+**一句话定义**：KV Cache CDN 是一套面向长上下文、多模型 Agent 时代的 **LLM 推理基础设施方案**。它把每个推理请求的"状态"（KV Cache）从引擎内的一份**一次性私有内存**，升级为**内容寻址、可跨节点、跨地域流通与复用的资产**；再用"调度 + 数据形态 + 经济学"三件事，把单机/单集群的**显存墙**与全球部署的**地理墙**，统一化解成一个 **CDN（内容分发网络）问题**来解——这正是本报告标题的由来。
+
+**核心逻辑（一条五步主链）**：
+
+```
+生产（算 KV）→ 上报（交指纹）→ 决策（值不值得跨域）→ 预分发（低谷推送）→ 就近消费（命中即增量）
+```
+
+1. **生产**：任一节点（通常是中心 Prefill DC）跑 Prefill 得到 KV，按"共享度"切成 A/B/C/D 模块、逐块算内容寻址指纹（§2）；
+2. **上报**：把 KV 段 + 对应 Hash + 成本上报网关（`SegmentReport`），网关累计热度与共享度，成为后续决策的养料；
+3. **决策**：网关用"准入评分 + T_net vs T_compute 博弈"判断值不值得跨域，决定**哪些段、什么时间、推给哪些 POP**（§4.6）；
+4. **预分发**：在夜间/网络低谷窗口，把高共享的 A/B 模块异步批量推送到区域 POP / 边缘——**摘出请求关键路径**，类比软件更新下发；
+5. **就近消费**：请求经**亲和路由**（§3）直达驻留节点，命中即只算 8K 级的增量，TTFT 从 10 s 级压到 1–2 s 级。
+
+**两条"不做"红线**（与直觉相反，却正是本方案成立的前提）：
+
+- **不做**在 WAN 上实时硬传几十 GB 的完整 KV——1 Gbps 下要 80 s，是灾难（§1.5 测算）；
+- **不做**"把缓存机械地放各地就完事"——而是让**请求找数据**（亲和路由）、让**预分发只在划算时发生**（经济博弈）。
+
+**三大支柱**（对应三章，即本方案对现有 CDN 的三处重写）：
+
+| 支柱 | 一句话机制 | 章节 | 消灭的问题 |
+|---|---|---|---|
+| 调度范式逆转 | 数据不动、请求流动（亲和路由 + 全局目录） | §3 | 请求触发时的跨域硬传 |
+| 生产—分发—消费管线 | 中心生成 + 指纹上报 + 低频预分发 + 边缘消费（算存分离） | §4 | 每个地域重复堆算力、重复算热门前缀 |
+| 经济博弈 + 全局降级 | 每次跨域先算账；边缘满足不了 SLA 就上移中心 | §5 | 恶劣网络下 SLA 崩溃 |
+
+**一张全局图**（控制面虚线 / 数据面实线）：
+
+```mermaid
+flowchart TB
+    U(("用户 / Agent"))
+
+    subgraph CP["控制平面（虚线控制流）"]
+        direction TB
+        GW["① 全局网关<br/>亲和路由 · 博弈仲裁 · 预分发决策"]
+        CAT["② KV 目录<br/>指纹寻址 · 热度统计"]
+    end
+
+    subgraph DP["数据平面（实线 KV 数据流）"]
+        direction TB
+        CORE["⑤ 中心 Prefill DC<br/>生产 KV 资产（Prefill）"]
+        POP["⑥ 区域 POP<br/>驻留 + 预分发"]
+        EDGE["⑦ 边缘节点<br/>就近命中 + Decode"]
+    end
+
+    U -->|RouteQuery / RouteGrant| GW
+    GW -.->|RouteLookup / 目录读写| CAT
+    GW -->|Allocate / PreDistOrder| CORE
+    CORE ==>|KVStreamPush（低谷预分发）| POP
+    POP ==>|热度下沉 L1→L0| EDGE
+    U -.->|方式 b 直连 Endpoint| EDGE
+    EDGE -.->|SegmentReport / SessionReport 上报| GW
+    EDGE ==>|TokenStream| U
+```
+
+**它解决什么 / 给谁 / 价值有多大**：
+
+- **给谁**：多地域部署、长上下文占比 > 20%、前缀复用率 > 30%、区域算力成本差大的 **Agent MaaS / 多模型推理平台**（完整适用边界见 §1.8）；
+- **价值**：跨域硬传清零；TTFT 从 ~10 s 压到 1–2 s（甚至零感知）；完整形态 TCO −30%~−45%（待 Phase 0 验证，§1.8）；
+- **前提**：这套经济性高度依赖 **MLA / 混合注意力架构**把 KV 密度压低一个量级，否则 200 Gbps 以下不经济（§7）。
+
+**贯穿全文的运行样例**：ACME Copilot 平台（Qwen3-72B @ w-2026.06.15，100K 上下文），上下文拆 A/B/C/D 四模块、指纹 `7f3a1b19` 等；§2 起所有接口、时序图、消息说明都以它为贯穿线索。
+
+### 1.3 核心论点与本质同构
 
 **核心论点**：当 KV Cache 的体量（百 GB/请求）、成本（占推理总成本 50%+）、复用价值（前缀复用率 30–70%）和地理跨度（跨集群、跨地域、跨时区）同时突破单机与单集群边界时，它就不再是一个引擎内的内存管理问题，而是一个**内容分发网络（CDN）问题**。解决这个 CDN 问题的正确姿势，不是对抗广域网带宽，而是**围绕广域网的物理局限，重构系统的调度逻辑（§3）、数据形态与部署拓扑（§4）、经济模型（§5）**。
 
@@ -88,7 +157,7 @@ KV Cache 与传统静态内容的关键差异（错误影响行是本质差异�
 
 块级寻址必须携带**不可变的 KV 兼容性清单（Compatibility Manifest）**，内容寻址 = 哈希(兼容性清单 × 块内容)——完整规范见 **§2（V3 新增）**。
 
-### 1.3 业界研究热点与技术演进方向（2026-09）
+### 1.4 业界研究热点与技术演进方向（2026-09）
 
 1. **PD 分离已从论文变为默认架构**：DistServe [P4]、Splitwise [P5] 确立的分离式推理已被 NVIDIA Dynamo、llm-d 等全面采纳。
 2. **集群级 KV 池化进入生产**：Mooncake [P6]（FAST'25 最佳论文，生产实测多处理 115% 请求）、MemServe [P10]、Preble [P12]（已被 AIBrix 采用）。
@@ -98,7 +167,7 @@ KV Cache 与传统静态内容的关键差异（错误影响行是本质差异�
 
 技术演进五方向：单向卸载→双向分发；性能优先→成本优先；同构→异构协同；单模型→多模型共享（DroidSpeak [P11]）；闭域→开放互联。
 
-### 1.4 何时从远端拉取 KV 比本地重算更合适（含计算过程）
+### 1.5 何时从远端拉取 KV 比本地重算更合适（含计算过程）
 
 > 本节是创新点三（§5）动态博弈引擎的数学基础。决策模型：
 
@@ -115,7 +184,7 @@ B·C  >  s·R          且          L  >  L*  =  T₀ / ( 1/R  −  s/(B·C) )
 
 三个本质规律：①胜负由 **"带宽×压缩积"（B·C）对"字节×算力积"（s·R）** 的比值决定，与 L 无关；②固定开销 T₀ 只能靠长度摊销——短上下文必属本地；③模型架构是第一杠杆——s 缩小 10 倍比带宽扩容 10 倍更便宜。
 
-#### 1.4.1 基础参数（KV 密度表）
+#### 1.5.1 基础参数（KV 密度表）
 
 s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/BF16 按 2 字节计）：
 
@@ -128,7 +197,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 
 本地重算基线：8×H100 节点（TP=8）Prefill 吞吐 R ≈ 10,000 token/s（70B 密集，保守 MFU）→ **s·R（GQA-70B）= 3.2 GB/s**。网络档位（有效吞吐）：100 Gbps ≈ 10 GB/s；10 Gbps ≈ 1.2 GB/s；1 Gbps ≈ 0.1 GB/s。CacheGen 压缩 C ≈ 4。
 
-#### 1.4.2 时间维度测算（100K 上下文，GQA-70B，32 GB KV）
+#### 1.5.2 时间维度测算（100K 上下文，GQA-70B，32 GB KV）
 
 | 路径 | 计算过程 | TTFT | 对比本地重算 |
 |---|---|---|---|
@@ -140,7 +209,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 
 这张表是全报告的"物理边界坐标"：Pull 范式在 1G–10G WAN 上是死局（§3.1）、跨域传输必须压缩到"仅动态模块增量"（§4.5）、需要动态博弈决定何时放弃拉取（§5.2）。
 
-#### 1.4.3 盈亏平衡：B·C vs s·R 与临界长度 L\*
+#### 1.5.3 盈亏平衡：B·C vs s·R 与临界长度 L\*
 
 | 模型架构 | s·R（R=10K tok/s） | 打平所需 B·C | 100G+4× | 10G+4× | 1G+4× |
 |---|---|---|---|---|---|
@@ -151,7 +220,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 
 临界长度 L\*（T₀ = 100 ms，GQA-70B）：100G+4× → ~1.1K token；10G+4× → ~2.8K token。即百 G 专线 + 4× 压缩下，**1K token 以上跨机房拉取即开始占优**，长上下文（100K+）收益最大——这就是 KV Cache CDN 的第一落点是长上下文 RAG、多轮 Agent 与超大系统提示词业务的原因。
 
-### 1.5 解码侧经济学（V3 修正版：为什么 KV 要向边缘移动）
+### 1.6 解码侧经济学（V3 修正版：为什么 KV 要向边缘移动）
 
 > **V2 勘误**：V2 表述"用户感知的每 token 延迟 ≈ max(解码计算时间, 网络 RTT)"混淆了**延迟（latency）与吞吐（throughput）**，并由此推导出"RTT=100ms 钳制用户在 ~10 token/s、千 token 会话累计节省 60–90 s"。V3 修正如下。
 
@@ -174,7 +243,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 2. **拓扑含义**：L0 边缘无需密集部署（每区域/国家一个即可），**两层拓扑（中心 + 区域 POP）是多数场景的更优默认**；L0 加密仅在语音级交互、合规数据驻留、故障域隔离三类需求下发生（§4.4）；
 3. **反向强化创新点一**：远端亲和路由的持续代价从"会话节奏灾难"降为"每轮 ~90 ms + 抖动"——**亲和性可以比 V2 设计的更"硬"**（§3.5 的弃亲和场景因此收窄）。
 
-### 1.6 技术可行性：成立
+### 1.7 技术可行性：成立
 
 | 证据 | 数据 | 来源 |
 |---|---|---|
@@ -191,7 +260,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 
 **结论**：模型侧（混合/MLA）、系统侧（分离、池化、压缩、位置无关复用）、硬件侧（CXL、SmartNIC、专用 Prefill 芯片）三条线均已就位，**当前不存在不可逾越的技术障碍，瓶颈在工程化与标准**。
 
-### 1.7 商业可行性：场景成立，且可精确刻画
+### 1.8 商业可行性：场景成立，且可精确刻画
 
 #### 单位经济学（每次 100K-token 请求，GQA-70B，8 GB 压缩后传输）
 
@@ -204,7 +273,7 @@ s = 2（K/V）× 层数 × KV 头数 × 头维度 × 每元素字节数（FP16/B
 | 潮汐卸载（远端算力 1/10 价格）+ 批发 | 0.0044 + 0.016 = 0.020 | ✅ 便宜 55% |
 | 混合架构（压缩后 0.8 GB）+ 零售专线 | 0.016 或 0.0044+0.016 | ✅ 零售带宽下也成立 |
 
-盈亏平衡带宽单价：`P_bw* = (1−f)·P_node·C/(R·s)`。GQA-70B + 4× 压缩下 P_bw* ≈ 0.0055 美元/GB；混合架构（s 缩小 10×）下 P_bw* ≈ 0.055 美元/GB，**全面覆盖市场专线价格**。
+盈亏平衡带宽单价：`P_bw* = (1−f)·P_node·C/(R·s)`。GQA-70B + 4× 压缩下 P_bw* ≈ 0.0055 美元/GB；混合架构（s 缩小 10×）下 P_bw* ≈ 0.055 美元/GB，**全面覆盖市场专线价格**。（V3 注：此封闭式仅含"带宽 vs 算力"二元；V3 新增的解压/缝合/目录/权重驻留成本未纳入，已并入 §8.3 Phase 0 的自底向上 TCO 模型。）
 
 > **商业可行性的两大开关**：① 带宽单价（批发/自营骨干 vs 零售专线）；② 模型 KV 密度（混合/MLA vs 传统 GQA/MHA）。二者满足其一，跨机房分发即进入经济可行区——这正是 Moonshot 选择 Kimi Linear 作为 PrfaaS 载体的经济动因。
 
@@ -360,7 +429,7 @@ SessionHandle: sess_9f2c71ab →
 
 ### 3.1 Pull 模式的广域死局
 
-现有方案的隐含假设：请求到达节点发现本地无缓存时，主动跨网拉取（Pull）KV。这在 100G+ 局域网内完全可行（§1.4.2：~0.9 s，快 11 倍），但平移到广域网数学上不成立：
+现有方案的隐含假设：请求到达节点发现本地无缓存时，主动跨网拉取（Pull）KV。这在 100G+ 局域网内完全可行（§1.5.2：~0.9 s，快 11 倍），但平移到广域网数学上不成立：
 
 | 网络档位（100K 上下文，8 GB 压缩后） | 拉取 TTFT | 对比本地重算（10 s） | 判定 |
 |---|---|---|---|
@@ -374,10 +443,10 @@ SessionHandle: sess_9f2c71ab →
 
 逆转调度方向：不再让数据去找计算，而是让计算去找数据。
 
-- **机制**：API 网关维护轻量级全局 KV 目录（部件②）。请求到达时，网关**不随机分配**、也不只按地理就近分配，而是把"KV 驻留位置"作为路由决策的**高权重因子**：查得会话 D 链驻留东京后，综合考量下**优先**路由到东京——同时权衡持续 Decode 的 RTT（按 §1.5 修正后的每轮模型折算）、跨境合规与故障集中度。
+- **机制**：API 网关维护轻量级全局 KV 目录（部件②）。请求到达时，网关**不随机分配**、也不只按地理就近分配，而是把"KV 驻留位置"作为路由决策的**高权重因子**：查得会话 D 链驻留东京后，综合考量下**优先**路由到东京——同时权衡持续 Decode 的 RTT（按 §1.6 修正后的每轮模型折算）、跨境合规与故障集中度。
 - **价值**：一条目录记录（前缀/会话指纹 16–32 字节 + 节点句柄 + 生命周期元数据）对比 KV 本体（GQA-70B 每 token 320 KB），**相差 5–6 个数量级**；路由决策在网关本地完成，微秒~毫秒级，**不占用任何跨域带宽**。
 
-技术现状：Preble [P12]（已被 AIBrix 采用）与 GORGO 已引入缓存路由维度（联合评估"本地缓存长度 × 跨区域传输延迟 × 目标节点排队"，端到端延迟再降 ~18%）。本方案与现状的差异在于**约束的优先级**：Preble 以"延迟最优"为目标、缓存分布当作输入；本方案把"**会话/模块 KV 驻留**"提升为路由第一约束，再在候选驻留节点间做延迟/成本/负载的次级优化。§1.5 修正后的 RTT 模型使这一差异比 V2 预想的更可持续——远端亲和的每轮代价仅 ~90 ms + 抖动。
+技术现状：Preble [P12]（已被 AIBrix 采用）与 GORGO 已引入缓存路由维度（联合评估"本地缓存长度 × 跨区域传输延迟 × 目标节点排队"，端到端延迟再降 ~18%）。本方案与现状的差异在于**约束的优先级**：Preble 以"延迟最优"为目标、缓存分布当作输入；本方案把"**会话/模块 KV 驻留**"提升为路由第一约束，再在候选驻留节点间做延迟/成本/负载的次级优化。§1.6 修正后的 RTT 模型使这一差异比 V2 预想的更可持续——远端亲和的每轮代价仅 ~90 ms + 抖动。
 
 ### 3.3 请求接口规范（V3 新增：结构声明 API）
 
@@ -437,52 +506,71 @@ X-SLA-Class: interactive
 
 语义要点：① `context_manifest.modules[].fp` 即 §2 指纹——网关据此查目录，**接口只传 16 字节指纹，不传内容**；② 未声明结构的老客户端退化为"前缀哈希"模式（网关对 prompt 头部滚动哈希），兼容存量流量（§6.4 冷启动影子模式即用此通道采集）；③ `parent` 字段支撑 Agent 分支/恢复（D 链分叉，§2.4）。
 
-### 3.4 两种实现方式（V3 新增）
+### 3.4 两种实现方式（V3 新增：方式 b 为主路径，方式 a 为备选）
 
-#### 方式 a）全局网关直接路由（LB / 反向代理式）
+#### 方式 a）全局网关直接路由（LB / 反向代理式）——备选实现
 
-网关是数据面的一跳：所有 token 流经网关代理转发。**降级/迁移对客户端完全透明**——创新点三的 SLA 降级（§5.4）在该方式下零客户端改动。
+网关是数据面的一跳：所有 token 流经网关代理转发。**降级/迁移对客户端完全透明**——创新点三的 SLA 降级（§5.4）在该方式下零客户端改动。此形态作为**备选**，用于存量浏览器/通用 SDK 无法两步握手、或需网关统一做安全审计与限流的场景，本报告默认不采用。
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant A as Agent / 客户端
     participant GW as ① 全局网关（数据面代理）
     participant CAT as ② KV 目录
     participant E as ⑦ 边缘节点 edge-tokyo-07
-    A->>GW: POST /v1/agent/completions{sid, context_manifest, sla}
-    GW->>CAT: RouteLookup{sid, fps=[7f3a1b19, b2e88477, d90c7e31], region=sg}
-    CAT-->>GW: RouteHit{primary=edge-tokyo-07, hit=92K/100K, lease=60s}
-    GW->>E: InferenceRequest{req_id, sid, manifest, route_ctx, deadline_ttft=2000ms}
-    E->>E: 命中本地 KV（A/B/D 链）· 增量 Prefill 8K
-    E-->>GW: TokenStream{req_id, seq, tokens}（流式回传）
-    GW-->>A: TokenStream（代理转发）
+    A->>GW: P1：POST /v1/agent/completions{sid, context_manifest, sla}
+    GW->>CAT: P2：RouteLookup{sid, fps=[7f3a1b19, b2e88477, d90c7e31], region=sg}
+    CAT-->>GW: P3：RouteHit{primary=edge-tokyo-07, hit=92K/100K, lease=60s}
+    GW->>E: P4：InferenceRequest{req_id, sid, manifest, route_ctx, deadline_ttft=2000ms}
+    E->>E: P5：命中本地 KV（A/B/D 链）· 增量 Prefill 8K
+    E-->>GW: P6：TokenStream{req_id, seq, tokens}（流式回传）
+    GW-->>A: P7：TokenStream（代理转发）
     Note over GW,E: SLA 降级时网关内部切换上游（§5.4）· 客户端无感
 ```
 
-#### 方式 b）先查询后直连（DNS 式解析）
+**消息逐条说明（方式 a，对应时序图 P1–P7）**：
 
-网关仅承载**控制面**（KB 级 RouteQuery/RouteGrant），token 流 Agent↔边缘直连——网关不被流量穿透，横向扩展压力骤减。
+- **P1**：Agent 发送 `POST /v1/agent/completions` 给全局网关，发起推理请求。**作用**：方式 a 下网关是唯一入口（客户端只认这一个 endpoint），所有 token 流量先到网关、由其代理转发，网关得以对全量请求做统一接入鉴权、限流与审计。**参数**：`sid`（会话 id，网关据此查该会话 D 链驻留节点，是亲和路由"请求找数据"的定位依据）；`context_manifest`（各模块的指纹 fp + 类型 + 来源，网关据此逐指纹查副本落位、判断命中与缺块）；`sla`（客户端声明的 ttft/tps 预算，网关据此判断目标节点能否按时满足，否则触发 §5 降级评估）。
+- **P2**：全局网关发送 `RouteLookup` 给 KV 目录，查询会话/模块驻留。**作用**：网关自身不保存分布信息，必须查目录（唯一事实源）获取每个 fp 的副本落位、命中长度与租约，这是亲和路由决策的输入。**参数**：`sid`（定位会话 D 链所在节点）；`fps`（模块指纹列表，逐一查副本、ttl、lease）；`region`（用户归属区域，用于过滤副本、避免把请求路由到非合规地域）。
+- **P3**：KV 目录返回 `RouteHit` 给网关。**作用**：目录给出"命中结论 + 推荐节点"，网关据此做最终路由；注意目录只是建议（hint），网关还需结合 §3.5 的 RTT/合规/负载做次级优化。**参数**：`primary=edge-tokyo-07`（会话 KV 主驻留节点，亲和首选）；`hit=92K/100K`（100K token 中 92K 已命中，网关据此估算只需补算 8K、预估 TTFT）；`lease=60s`（命中结论的有效期，网关须在此窗口内消费，过期则视为可能已驱逐）。
+- **P4**：网关发送 `InferenceRequest` 给边缘节点（方式 a 特有的代理转发）。**作用**：网关把请求连同路由上下文转发给命中节点，token 回程也经网关（与方式 b 的直连相对，这是方式 a 多出的一跳）。**参数**：`req_id`（请求唯一标识，贯穿全链路用于日志、审计与降级寻址）；`sid`、`manifest`（透传给边缘）；`route_ctx`（网关附加的路由上下文：目标节点、miss 计划、降级预案）；`deadline_ttft=2000ms`（首字时延预算，边缘据此决定是本地补算还是走 §5 降级）。
+- **P5**：边缘节点本地动作（自消息）：命中本地 KV（A/B/D 链），仅做 8K 新 token 的增量 Prefill。**作用**：缓存的核心收益在此兑现——92K token 免重算、只补差异部分，TTFT 从全量重算的 10s 级压到 1–2s 级。
+- **P6**：边缘节点回传 `TokenStream` 给网关。**作用**：方式 a 下解码 token 回程经网关，网关可叠加限流/审计。**参数**：`req_id`、`seq`（token 序号，用于流续传与断点恢复）、`tokens`（解码 token 正文）。
+- **P7**：网关代理转发 `TokenStream` 给 Agent。**作用**：网关完成数据面转发，同时是统一计费/合规/观测的收口点。**参数**：同 P6。
+
+#### 方式 b）先查询后直连（DNS 式解析）——主路径 / 默认
+
+网关仅承载**控制面**（KB 级 RouteQuery/RouteGrant），token 流 Agent↔边缘直连——网关不被流量穿透，横向扩展压力骤减。**本报告默认采用方式 b**（与 §6.1「目录仅网关可写、网关不被流量穿透」最自洽），全部流程时序图（§4.5/§4.6/§5.4/§6.4）均以方式 b 为准。
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant A as Agent
     participant GW as ① 全局网关（控制面）
     participant CAT as ② KV 目录
     participant E as ⑦ 边缘节点 edge-tokyo-07
-    A->>GW: RouteQuery{sid, fps=[A,B,C,D], sla, geo=sg}
-    GW->>CAT: RouteLookup{sid, fps, region}
-    CAT-->>GW: RouteHit{primary=edge-tokyo-07, hit=92K/100K}
-    GW-->>A: RouteGrant{target, entry_token=JWT{sid,node,exp=60s}, alternates, lease_ttl=60s}
-    A->>E: POST /v1/agent/completions + Bearer entry_token + manifest
-    E->>E: 离线校验 JWT · 命中 KV · 增量 Prefill
-    E-->>A: TokenStream（直连，不过网关）
-    A->>GW: LeaseRenew{sid}（每 45s，长会话）
+    A->>GW: P1：RouteQuery{sid, fps=[A,B,C,D], sla, geo=sg}
+    GW->>CAT: P2：RouteLookup{sid, fps, region}
+    CAT-->>GW: P3：RouteHit{primary=edge-tokyo-07, hit=92K/100K}
+    GW-->>A: P4：RouteGrant{target, entry_token=JWT{sid,node,exp=60s}, alternates, lease_ttl=60s}
+    A->>E: P5：POST /v1/agent/completions + Bearer entry_token + manifest
+    E->>E: P6：离线校验 JWT · 命中 KV · 增量 Prefill
+    E-->>A: P7：TokenStream（直连，不过网关）
+    A->>GW: P8：LeaseRenew{sid}（每 45s，长会话）
     Note over A,E: 节点实际未命中 → RouteMiss：边缘本地降级（§5）或重新 RouteQuery
 ```
 
-#### 两种方式对比与混合策略
+**消息逐条说明（方式 b，对应时序图 P1–P8）**：
+
+- **P1**：Agent 发送 `RouteQuery` 给全局网关，仅做控制面解析。**作用**：方式 b 的"先查后连"第一步——Agent 不发推理，而是先问网关"我的请求应交给哪个节点"，因为只有网关掌握全局 KV 驻留分布；网关查目录后只回一个 Endpoint，token 流不经过网关。**参数**：`sid`（会话 id，网关据此做亲和路由：定位 D 链驻留节点）；`fps=[A,B,C,D]`（模块指纹列表，网关逐指纹查副本，评估命中情况）；`sla`（时延/吞吐预算，约束路由目标可达性）；`geo=sg`（用户归属区域 + 合规约束，避免路由到非合规地域）。
+- **P2**：网关发送 `RouteLookup` 给 KV 目录。**作用**：查询会话 KV 驻留与各模块副本分布，是亲和路由的输入；仅网关可读目录（单写点原则）。**参数**：`sid`（会话 D 链定位）、`fps`（模块指纹）、`region`（按区域过滤副本）。
+- **P3**：KV 目录返回 `RouteHit`。**作用**：给出"驻留节点 + 命中比例"，网关据此选主节点、备选节点，做合规/负载次级判断。**参数**：`primary=edge-tokyo-07`（主驻留节点）；`hit=92K/100K`（命中 92K/100K，网关据此预估只需补 8K）。
+- **P4**：网关返回 `RouteGrant` 给 Agent。**作用**：控制面应答的核心——网关只下发目标与凭据、不转发请求，实现"控制面/数据面分离，网关不被 GB 级 token 流量穿透"。**参数**：`target`（目标节点标识）；`entry_token`（网关签发的 JWT，内含 `sid`、目标节点、过期时间，接收方凭公钥**离线校验**、无需回问网关，过期即拒）；`alternates`（备选节点列表，主节点过载/故障时 Agent 的退路）；`lease_ttl=60s`（本路由决策有效期，超时 Agent 须重新 RouteQuery，因为节点状态可能已变）。
+- **P5**：Agent 直连边缘节点发送 `POST /v1/agent/completions`。**作用**：数据面直连——携带 entry_token 证明已获授权，携带 manifest 让边缘做模块装配；token 流不走网关。**参数**：`Bearer entry_token`（授权凭据）、`manifest`（模块指纹 + 新增内容）。
+- **P6**：边缘节点本地动作（自消息）：离线校验 JWT、命中 KV、增量 Prefill。**作用**：边缘凭签发公钥本地验签（不依赖网关在线），校验通过后仅补算缺失 token——这是"命中即加速"的落点。
+- **P7**：边缘节点直连回传 `TokenStream` 给 Agent。**作用**：token 流直连返回，省去网关中转一跳。**参数**：`req_id`、`seq`、`tokens`。
+- **P8**：Agent 发送 `LeaseRenew` 给网关。**作用**：长会话每 45s 续约一次，防止授予的 lease 过期后节点状态漂移（如会话 D 链被 D 随行复制迁移）。**参数**：`sid`（需续约的会话）。
+
+#### 两种方式对比与默认选型
 
 | 维度 | a) 网关直连（LB 式） | b) 先查后连（DNS 式） |
 |---|---|---|
@@ -493,20 +581,56 @@ sequenceDiagram
 | 适用 | 浏览器/通用 SDK、降级场景多、SLA 敏感 | Agent 原生客户端、长流、成本敏感 |
 | 类比 | L7 LB / 服务网格 | DNS 解析 + 直连 |
 
-**混合策略（推荐）**：会话首轮走方式 a（网关建立 D 链驻留 + 采集 manifest），`RouteGrant` 随响应下发；第 2 轮起 Agent 切方式 b 直连边缘，网关只保留 lease 续期与审计。兼得两者优点。
+**默认与降解**：默认全程走方式 b；方式 a 作为**备选部署形态**整体启用（非逐轮混合），届时网关数据面需冗余扩容。两形态共享同一控制面语义（RouteLookup/RouteGrant/entry_token），仅数据面路径不同。
 
 ### 3.5 亲和性的边界、修正后的弃亲和判据与 D 随行复制（V3 补强）
 
-亲和性是**软约束**，硬约束是**首字延迟 + 持续 Decode 的每轮 RTT（§1.5 修正模型）+ 综合成本**。四类"弃亲和"场景（V3 按修正后 RTT 经济学重新量化）：
+亲和性是**软约束**，硬约束是**首字延迟 + 持续 Decode 的每轮 RTT（§1.6 修正模型）+ 综合成本**。四类"弃亲和"场景（V3 按修正后 RTT 经济学重新量化）：
 
 1. **Agent 多轮循环的累积 RTT**：K 轮 × RTT 超过省下的 Prefill 时间时弃亲和（K > T_prefill_saved / RTT 即触发；90 ms 档位下 K 约为数十轮，故单轮会话几乎永不触发）；
 2. **跨境合规 / 数据主权**：`geo.compliance` 声明的驻留约束让位于亲和；
 3. **驻留节点故障或过载**：熔断切换至就近节点，缺失段走 §5 博弈决策；
 4. **首次请求（无历史会话）**：退化为地理就近 + 共享模块预热命中（§4）。
 
-**D 随行复制（V3 新增机制，评审补强）**：V2 的"亲和 miss 缺失 D 增量 100–200 MB"混淆了情形——**新会话**真正缺失的是 C 全量（30–80K token，10–25 GB 原始），**亲和 miss** 缺失的是 **D 全量历史**（非单轮增量）。补强机制：**每轮 Decode 后，边缘节点异步将 D 增量（100–200 MB 压缩后 ~30–50 MB）复制到用户归属区域的 POP**（`region_home` 字段，区域内带宽廉价），使亲和 miss 的代价被限制为**区域内拉取（亚秒级）或区域内重算**，永不触发跨域硬传。该机制由部件③潮汐调度器编排（`DShadowPush`，低优先级、低谷窗口执行），是软亲和从权宜设计变成鲁棒设计的关键补丁。
+**D 随行复制（V3 新增机制，评审补强）**：V2 的"亲和 miss 缺失 D 增量 100–200 MB"混淆了情形——**新会话**真正缺失的是 C 全量（30–80K token，10–25 GB 原始），**亲和 miss** 缺失的是 **D 全量历史**（非单轮增量）。补强机制：**每轮 Decode 后，边缘节点异步将 D 增量（100–200 MB 压缩后 ~30–50 MB）复制到用户归属区域的 POP**（`region_home` 字段，区域内带宽廉价），使亲和 miss 的代价被限制为**区域内拉取（亚秒级）或区域内重算**，永不触发跨域硬传。该机制由部件③潮汐调度器编排（`DShadowPush`，低优先级、低谷窗口执行），是软亲和从权宜设计变成鲁棒设计的关键补丁。复制完成后由区域 POP 上报 `SessionReport` → 网关 `SessionUpsert` 更新会话句柄（primary 复位），与 §5.4 接管后的回流构成同一闭环。
 
-> **亲和性的经济学（修正版）**：命中亲和省下的是 GB 级跨域传输（一次性 80 s / 8 GB 档），丢失亲和付出的是亚秒级增量重算或区域内拉取；而远端亲和的持续代价按 §1.5 修正后仅为每轮 ~90 ms + 抖动——路由把它们放进同一成本函数（部件①）。
+> **亲和性的经济学（修正版）**：命中亲和省下的是 GB 级跨域传输（一次性 80 s / 8 GB 档），丢失亲和付出的是亚秒级增量重算或区域内拉取；而远端亲和的持续代价按 §1.6 修正后仅为每轮 ~90 ms + 抖动——路由把它们放进同一成本函数（部件①）。
+
+### 3.6 亲和命中主路径（整合：路由 + 模块命中 + D 回写闭环）
+
+§3.4 给的是路由握手，此处补**贯穿亲和命中的完整快乐路径**（方式 b），收拢"命中 → 增量 Prefill → Decode → D 增量 → 目录更新"：
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant GW as ① 全局网关
+    participant CAT as ② KV 目录
+    participant E as ⑦ 边缘节点 edge-tokyo-07（亲和节点）
+    A->>GW: P1：RouteQuery{sid, context_manifest=[A,B,C], history=session, sla}
+    GW->>CAT: P2：RouteLookup{sid, fps}
+    CAT-->>GW: P3：RouteHit{primary=edge-tokyo-07, hit=92K/100K}
+    GW-->>A: P4：RouteGrant{endpoint=edge-tokyo-07, entry_token, lease_ttl=60s}
+    A->>E: P5：POST /v1/agent/completions + entry_token + manifest
+    E->>E: P6：本地命中 A/B/C/D 链 · 增量 Prefill 仅 8K 新 token
+    E-->>A: P7：TokenStream（Decode 流式直连）
+    E->>GW: P8：SessionReport{sid, d_chain_head=fp(D8), new_turn=+1}（本轮 D 增量落账 · 目录仅网关可写）
+    GW->>CAT: P9：SessionUpsert{sid, primary=edge-tokyo-07, d_chain_head=fp(D8)}
+    GW->>CAT: P10：HeatIncr{fps, +1, sid, region}
+    Note over E,GW: D 随行复制（DShadowPush）异步把 D 增量复制到 region_home POP（§3.5）
+```
+
+**消息逐条说明（亲和命中主路径，对应时序图 P1–P10）**：
+
+- **P1**：Agent 发送 `RouteQuery` 给全局网关。**作用**：会话续聊（第 7 轮）的入口——先查后连，问网关"历史会话驻留在哪，该把本轮请求发往哪个节点"。**参数**：`sid`（会话 id，定位 D 链驻留是亲和路由的核心）；`context_manifest=[A,B,C]`（本轮仍需要的模块指纹，网关查它们的副本是否齐备）；`history=session`（历史上下文走会话驻留而非重新声明，即 D 链）；`sla`（时延预算）。
+- **P2**：网关发送 `RouteLookup` 给 KV 目录。**作用**：同时查两类信息——会话 D 链在哪、A/B/C 模块副本在哪，据此判定"亲和命中"还是"需跨节点补块"。**参数**：`sid`、`fps`（模块指纹列表）。
+- **P3**：KV 目录返回 `RouteHit`。**作用**：告知"会话 D 链 + 模块 A/B/C 均在 edge-tokyo-07 齐备（92K/100K）"，网关判断为最优亲和命中。**参数**：`primary=edge-tokyo-07`、`hit=92K/100K`。
+- **P4**：网关返回 `RouteGrant` 给 Agent。**作用**：下发目标节点与授权凭据，Agent 据此直连，网关数据面不参与。**参数**：`endpoint=edge-tokyo-07`（直连地址）、`entry_token`（签发 JWT）、`lease_ttl=60s`（有效期，覆盖本轮会话）。
+- **P5**：Agent 直连边缘发送推理请求。**作用**：携带授权与模块清单直连命中节点，开启本轮流式生成。**参数**：`entry_token` + `manifest` + `new_input`（本轮新增文本）。
+- **P6**：边缘节点本地动作（自消息）：本地命中 A/B/C/D 链，仅增量 Prefill 8K 新 token。**作用**：92K token 的历史与共享前缀免重算，只补本轮新增，TTFT 秒级。
+- **P7**：边缘节点直连回传 `TokenStream`（Decode 流式）。**作用**：token 直连返回用户。**参数**：`req_id`、`seq`、`tokens`。
+- **P8**：边缘节点发送 `SessionReport` 给网关。**作用**：本轮 Decode 产生新的 D 增量，须把会话状态变化上报——因**目录仅网关可写**，边缘不能直写目录，只能上报网关。**参数**：`sid`、`d_chain_head=fp(D8)`（新 D 链头，把 D 链往前推进一轮）、`new_turn=+1`（轮次 +1，供 lease/生命周期管理与下一轮亲和定位）。
+- **P9**：网关写 `SessionUpsert` 到 KV 目录。**作用**：网关把会话句柄更新（primary 仍为 edge-tokyo-07、D 链头推进到 D8），供下一轮 RouteLookup 命中。**参数**：`sid`、`primary=edge-tokyo-07`、`d_chain_head=fp(D8)`。
+- **P10**：网关写 `HeatIncr` 到 KV 目录。**作用**：累计该模块/会话的热度与共享度，供 §6.4 准入评分的"复用收益"项使用（决定升层/降层/预分发）。**参数**：`fps`、`+1`（命中计数）、`sid`、`region`。
 
 ---
 
@@ -536,6 +660,18 @@ sequenceDiagram
 
 关键观察：A + B 合计仅 **1–2 GB**——高共享、小体量、低变更频率，是"黄金分发对象"（压缩后几百 MB）；庞大的 C 与动态的 D 不入全球分发。**装配受 KV 依赖 DAG 约束**（§2.4 的 deps）：A/B 是无上游依赖的根模块最适合异步预分发；C 依赖 A/B；D 依赖全部上游——目录按拓扑序装配，依赖缺失时回源拉取或局部重算补齐。
 
+**粒度与寻址（V3 澄清，消除"模块/段/块"术语漂移）**：
+
+| 粒度 | 定义 | 寻址/ID | 用途 |
+|---|---|---|---|
+| **模块（module）** | 业务语义单元 A/B/C/D | 模块指纹 fp（§2） | 目录键、路由输入、准入/热度聚合 |
+| **段（segment）** | 一次请求内某模块的 KV 集合 | 由 fp + 请求上下文定位 | `SegmentReport` 上报的粒度 |
+| **块（chunk）** | 内容寻址的最小传输/去重单元 | `chunk_id = hash(FP_struct ‖ chunk 内容)` | 分发、传输、去重的基本单位 |
+
+即：目录以 **fp（模块）为键**，fp 下挂 chunk 列表；分发与传输按 **chunk** 进行，`SegmentReport` 按模块聚合上报 chunk 清单。
+
+**"区域驻留"仅约束分发流向，不约束推理发生地（V3 澄清）**：C 的"租户级区域驻留"指其 KV **不入全球预分发**（私有数据不跨国流动）；但 C 的**推理（Prefill/Decode）可以发生在中心**——中心对租户是普通推理节点（§4.5 注记⑥）。两条维度不可混同。
+
 ### 4.3 PIC：微模块化的数学根基（压缩保留）
 
 把 KV 从"铁板一块"解耦为可独立寻址微模块，需跨两道鸿沟：
@@ -562,37 +698,53 @@ sequenceDiagram
 | **L1 区域 POP** | 大容量 KV 驻留 + 跨域传输引擎 | CXL 内存池 + NVMe，少量 GPU | 存储密集，算力需求低 |
 | **L0 边缘节点** | 完整权重的就近 Decode + 轻量增量 Prefill | Decode 异构/专用硬件 + SmartNIC（**权重不减**） | 免大 Prefill 算力池，用异构 Decode 降本 |
 
-**V3 修正两点**：① 边缘"廉价"仅指 Prefill 算力——**权重驻留冗余是底座成本**（N 模型 × M 边缘 × 140 GB/70B 模型，MoE 前沿模型边缘不可驻留；部分区域受权重出口管制无法驻留前沿模型，L0 在该区域不成立）；② 按 §1.5 修正的 RTT 经济学，**两层拓扑（L2 + L1）是多数场景更优默认**，L0 仅在语音级交互、合规驻留、故障隔离三类需求下加密。
+**V3 修正两点**：① 边缘"廉价"仅指 Prefill 算力——**权重驻留冗余是底座成本**（N 模型 × M 边缘 × 140 GB/70B 模型，MoE 前沿模型边缘不可驻留；部分区域受权重出口管制无法驻留前沿模型，L0 在该区域不成立）；② 按 §1.6 修正的 RTT 经济学，**两层拓扑（L2 + L1）是多数场景更优默认**，L0 仅在语音级交互、合规驻留、故障隔离三类需求下加密。**中心容灾**：L2 是全局单点，需 N+1 / 同构区域镜像（Regional Origin），否则中心故障时全体冷未命中无回退——纳入 Phase 3 规格。
 
 潮汐形态（四股潮汐叠加，保留自 V2）：算力潮汐（时区套利）、缓存潮汐（热点下沉/冷回收）、多模型共享潮汐（DroidSpeak 关键层复用）、成本潮汐（电价/算力/带宽价差动态跟踪）。
 
 ### 4.5 流程时序一：冷未命中 — 中心 Prefill+Decode 与 KV 段上报（网关仅返回 Endpoint）
 
-**场景**：新模块（如租户新知识库 C 或新版系统提示词 A）全域无 KV。网关按 §1.7 博弈选择中心生成，**只返回 Endpoint 给 Agent、不代理转发请求**（§3.4.b 先查后连语义）；中心 PrefillDC 在本地完成 **Prefill + Decode**（冷会话无亲和 D 链，§1.5 修正后单次 RTT 是一次性偏移，故**无需实时卸载 Decode 到边缘**）；推理完成后**将 KV 段与对应 Hash 上报网关进行复用统计**，供 §4.6 决策后续低频分发。
+**场景**：新模块（如租户新知识库 C 或新版系统提示词 A）全域无 KV。网关按 §1.8 博弈选择中心生成，**只返回 Endpoint 给 Agent、不代理转发请求**（以主路径方式 b 为例；方式 a 部署下由网关代理转发，其余流程不变）；中心 PrefillDC 在本地完成 **Prefill + Decode**（冷会话无亲和 D 链，§1.6 修正后单次 RTT 是一次性偏移，故**无需实时卸载 Decode 到边缘**）；推理完成后**将 KV 段与对应 Hash 上报网关进行复用统计**，供 §4.6 决策后续低频分发。**中心处理租户请求的默认性**：中心 Prefill DC 对租户而言是普通推理节点，**默认允许处理租户/Agent 请求**；仅当存在特别约定（`geo.compliance` 数据驻留/主权）时，受约束数据才不得路由至非合规地域——该约定本身即"接受 SLA 降级"的取舍（见 §4.5 设计注记⑥）。
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant A as Agent（新加坡）
     participant GW as ① 全局网关（控制面 · 不代理转发）
     participant CAT as ② KV 目录
-    participant T as ③ 潮汐调度器
+    participant T as ③ 潮汐调度器（内嵌于①网关）
     participant Core as ⑤ 中心 Prefill DC core-07
-    A->>GW: RouteQuery{sid, context_manifest, sla_ttft=4000ms}（先查后连 §3.4.b）
-    GW->>CAT: CatalogQuery{fps=[7f3a1b19, b2e88477, c41d5502], sid}
-    CAT-->>GW: CatalogMiss{scope=global, reason=new_module}
-    GW->>T: 询价{local_recompute_usd, tidal_offload_usd}
-    T-->>GW: 对侧时区夜间算力 −70% → 建议 Core 本节点 Prefill + Decode
-    GW->>Core: Allocate{req_id, sid, kv_spec{codec=cg-L4}, deadline_ttft=4000ms, budget_usd=0.05}（分配预留 · 非转发请求）
-    GW-->>A: RouteGrant{endpoint=core-07, entry_token=JWT{sid, exp}, lease_ttl=60s}（仅返回 Endpoint）
-    A->>Core: POST /v1/agent/completions + entry_token + manifest（Agent 直连 Endpoint）
-    Core->>Core: Prefill 计算（200K token）+ 分段编码<br/>seg_i = KVChunk{chunk_id = hash(FP_struct, seg_i 内容), token_range, codec, bytes}
-    Core->>GW: SegmentReport{req_id, segments=[{fp, chunk_ids[], raw_bytes, comp_bytes, prefill_gpu_s, cost_usd}], FP_struct}
-    Core-->>A: TokenStream（Decode 流式 · 中心本地完成 · 直连 Agent，无边缘中转）
-    GW->>CAT: CatalogUpsert{fp → origin=core-07, req 绑定}
-    GW->>CAT: HeatIncr{fps[], +1, sid, region=sg}
-    GW->>CAT: SessionUpsert{sid, primary=core-07, d_chain_head=fp(D1)}（网关据 SegmentReport 登记会话句柄）
+    A->>GW: P1：RouteQuery{sid, context_manifest, sla_ttft=8000ms}（先查后连 §3.4.b）
+    GW->>CAT: P2：CatalogQuery{fps=[7f3a1b19, b2e88477, c41d5502], sid}
+    CAT-->>GW: P3：CatalogMiss{scope=global, reason=new_module}
+    GW->>T: P4：询价{local_recompute_usd, tidal_offload_usd}
+    T-->>GW: P5：对侧时区夜间算力 −70% → 建议 Core 本节点 Prefill + Decode
+    GW->>Core: P6：Allocate{req_id, sid, kv_spec{codec=cg-L4}, deadline_ttft=8000ms, budget_usd=0.05}（分配预留 · 非转发请求）
+    GW-->>A: P7：RouteGrant{endpoint=core-07, entry_token=JWT{sid, exp}, lease_ttl=60s}（仅返回 Endpoint）
+    A->>Core: P8：POST /v1/agent/completions + entry_token + manifest（Agent 直连 Endpoint）
+    Core->>Core: P9：Prefill 计算（100K token）+ 分段编码<br/>chunk_i = KVChunk{chunk_id = hash(FP_struct, chunk_i 内容), token_range, codec, bytes}
+    Core->>GW: P10：SegmentReport{req_id, segments=[{fp, chunk_ids[], raw_bytes, comp_bytes, prefill_gpu_s, cost_usd}], FP_struct}
+    Core-->>A: P11：TokenStream（Decode 流式 · 中心本地完成 · 直连 Agent，无边缘中转）
+    GW->>CAT: P12：CatalogUpsert{fp → origin=core-07, req 绑定}
+    GW->>CAT: P13：HeatIncr{fps[], +1, sid, region=sg}
+    GW->>CAT: P14：SessionUpsert{sid, primary=core-07, d_chain_head=fp(D1)}（网关据 SegmentReport 登记会话句柄）
 ```
+
+**消息逐条说明（冷未命中，对应时序图 P1–P14）**：
+
+- **P1**：Agent 发送 `RouteQuery` 给全局网关。**作用**：新模块首次出现（如租户新知识库 C 或新版系统提示词 A），Agent 先问路由；这次必然查不到命中，因此是"冷未命中"路径的起点。**参数**：`sid`、`context_manifest`（新模块指纹）、`sla_ttft=8000ms`（首字时延预算——冷路径要跑完整 Prefill，预算比命中路径宽松）。
+- **P2**：网关发送 `CatalogQuery` 给 KV 目录。**作用**：确认这些 fp 是否已有副本可复用；冷未命中时这一步结果决定是"回源生成"还是"查漏补缺"。**参数**：`fps`（模块指纹列表）、`sid`。
+- **P3**：KV 目录返回 `CatalogMiss`（全域未命中）。**作用**：明确"任何节点都没有这些 KV 段"，网关据此转"生产"路径（中心生成），而非"分发"路径。**参数**：`scope=global`（全局无副本）、`reason=new_module`（原因：新模块）。
+- **P4**：网关内部询价（③潮汐调度器内嵌于网关）。**作用**：生产前先算账——本地重算 vs 对侧时区潮汐卸载哪个更便宜，用 §1.8 的经济学决策替代拍脑袋。**参数**：`local_recompute_usd`（本地重算成本）、`tidal_offload_usd`（卸载到对侧算力池的成本）。
+- **P5**：潮汐调度器返回建议。**作用**：给出代价结论——对侧时区夜间算力 −70%，由此决定"在哪个节点生产"（本例选中心本节点 Prefill+Decode）。**参数**：建议内容（含目标节点、是否本节点 Decode）。
+- **P6**：网关发送 `Allocate` 给中心。**作用**：向中心**分配预留**这次生产任务（注意不是转发请求本身，Agent 会自己直连）；`Allocate` 仅在需预留容量/配额记账时使用，否则中心可凭 entry_token 离线处理。**参数**：`req_id`（绑定额度/账目）、`sid`、`kv_spec{codec}`（指定 CacheGen 编码档位）、`deadline_ttft=8000ms`、`budget_usd`（本次成本上限，超支可拒/降级）。
+- **P7**：网关返回 `RouteGrant` 给 Agent。**作用**：**只返回 Endpoint、不代理转发**——Agent 直连中心，网关数据面不参与（方式 b）。**参数**：`endpoint=core-07`（中心直连地址）、`entry_token`（含 req_id/过期，中心离线验）、`lease_ttl=60s`。
+- **P8**：Agent 直连中心发送推理请求。**作用**：携带授权与新模块内容直连中心，触发生产+服务。**参数**：`entry_token` + `manifest` + 新内容。
+- **P9**：中心本地动作（自消息）：Prefill 100K token + 分段编码为 chunk。**作用**：中心用重算力池跑完整 Prefill，并把 KV 切成内容寻址的 chunk（`chunk_id = hash(FP_struct, chunk 内容)`），为复用与后续分发做去重准备。
+- **P10**：中心发送 `SegmentReport` 给网关。**作用**：生产完成后，把 **KV 段 + Hash + 成本**上报网关做复用统计——网关据此判断这些段日后值不值得预分发（进入 §6.4 准入评分）。**参数**：`segments[{fp, chunk_ids[], raw/comp_bytes, prefill_gpu_s, cost_usd}]`、`FP_struct`；注意网关只收元数据（KB 级），KV 本体不流经网关。
+- **P11**：中心直连回传 `TokenStream` 给 Agent。**作用**：Prefill 后中心本地接续 Decode，冷会话无亲和 D 链、单次 RTT 是一次性偏移，故不必实时卸载到边缘。**参数**：`req_id`、`seq`、`tokens`。
+- **P12**：网关写 `CatalogUpsert` 到 KV 目录。**作用**：把这批新模块登记为 `origin=core-07`（请求级临时登记），后续热度上来才由 §4.6 转正式预分发。**参数**：`fp → origin=core-07`、`req` 绑定。
+- **P13**：网关写 `HeatIncr` 到 KV 目录。**作用**：热度 +1，与共享度一起累计，供准入评分。**参数**：`fps`、`+1`、`sid`、`region=sg`。
+- **P14**：网关写 `SessionUpsert` 到 KV 目录。**作用**：新会话的 D 链暂驻中心，登记会话句柄（primary=core-07），后续 D 随行复制下沉后 primary 再复位移回区域。**参数**：`sid`、`primary=core-07`、`d_chain_head=fp(D1)`。
 
 **消息与关键参数表：**
 
@@ -607,7 +759,7 @@ sequenceDiagram
 | `HeatIncr` | GW→CAT | fps[]、+1、sid、region | 热度与共享度（distinct_sessions）累计 |
 | `SessionUpsert` | GW→CAT | sid、primary、d_chain_head | 网关依据 `SegmentReport` 登记会话句柄（**目录仅网关可写**）；D 链暂驻中心，后续按 §3.5 下沉 |
 
-**设计注记**：① `chunk_id` 内容寻址——两个请求各自生成同一 A，得到相同 chunk_id，**目录天然去重**；② `SegmentReport` 携带 prefill_gpu_s 与 cost_usd，直接进入 TCO 台账与 §6.4 准入评分（复用收益 = 后续命中 × 本次成本）；③ 请求级临时副本在会话结束后按准入评分决定转正或回收；④ **与早期版本的关键差异**：本流程**不做实时边缘 Decode 卸载**——冷未命中无亲和 D 链，Decode 端到端在中心闭环，KV 段经 `SegmentReport` 上报后，是否进入边缘/POP 驻留交由 §4.6 的**低频再分发**决策（"冷请求先在中心闭环，热度起来后再下沉"）；⑤ `RouteGrant` 携带的 `entry_token` 由 Core 离线校验（同 §3.4.b），若 Core 过载则拒绝并引导 Agent 重新 `RouteQuery`。
+**设计注记**：① `chunk_id` 内容寻址——两个请求各自生成同一 A，得到相同 chunk_id，**目录天然去重**；② `SegmentReport` 携带 prefill_gpu_s 与 cost_usd，直接进入 TCO 台账与 §6.4 准入评分（复用收益 = 后续命中 × 本次成本）；③ 请求级临时副本在会话结束后按准入评分决定转正或回收；④ **与早期版本的关键差异**：本流程**不做实时边缘 Decode 卸载**——冷未命中无亲和 D 链，Decode 端到端在中心闭环，KV 段经 `SegmentReport` 上报后，是否进入边缘/POP 驻留交由 §4.6 的**低频再分发**决策（"冷请求先在中心闭环，热度起来后再下沉"）；⑤ `RouteGrant` 携带的 `entry_token` 由 Core 离线校验（同 §3.4.b），且 `entry_token` 内 `claims.req_id` 与 `Allocate` 的 `req_id` 绑定；`Allocate` 仅在需预留容量/配额记账时使用，否则 Core 凭 entry_token 离线处理即可；⑥ **中心处理租户请求的默认性**——中心 Prefill DC 对租户是普通推理节点，默认可处理租户/Agent 请求（§4.2 的"C 区域驻留"仅约束预分发流向，不禁止中心推理）；仅当 `geo.compliance` 声明数据驻留时才不得路由至非合规中心，该约定即"接受 SLA 降级"的取舍；⑦ **直连暴露面**——中心/边缘对外直连须经网络接入层（VPC 对等/网关隧道），`entry_token` 只做认证、不做网络隔离；⑧ **会话态上报归一**——此处会话态并入 `SegmentReport`，§5.4 接管因无复用统计而单列 `SessionReport`，两者等价，实现可统一为 `SessionReport` 以简化词汇。
 
 ### 4.6 流程时序二：网关预分发决策 — 哪些 KV 段、何时、发给哪些 POP（V3 新增，要求 4b）
 
@@ -615,24 +767,34 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant CAT as ② KV 目录（热度统计）
     participant GW as ① 全局网关（内嵌 ③ 潮汐调度决策）
     participant Core as ⑤ 中心 Prefill DC（Origin Store）
     participant POP as ⑥ 区域 POP ×N
     participant E as ⑦ 边缘节点
-    CAT->>GW: StatsAggregate{window=24h, per_fp={hits, distinct_sessions, regions, hour_hist, ttft_saved_ms}}
-    GW->>GW: 准入评分 = E[复用/天] × C_recompute − C_store/day − C_transfer/day − C_sew/hit
-    GW->>GW: PreDistPlan 决策<br/>哪些 fp · 哪些目标 POP · 哪个时间窗口 · 分发到哪一层
-    GW->>Core: PreDistOrder{plan_id, items=[{fp, chunk_ids[], target_pops, target_layer=L1, ttl=7d, dedup=true}], window=02:00–05:00_local, bw_budget_gbps=40, precedence=3}
-    Core->>POP: KVStreamPush{plan_id, fp, chunks[]}（AIMD 拥塞控制 · 微块多源聚合）
-    POP-->>Core: ChunkAck{chunk_id, bytes, rtt_ms, goodput_gbps}
-    POP->>GW: ReplicaReport{fp, node=pop-x, layer=L1, ttl, lease}（副本落位上报）
-    GW->>CAT: CatalogUpsert{fp→pop-x, layer=L1, ttl, lease}
-    POP->>GW: PlanFeedback{plan_id, done=18/20, bytes=5.8GB, duration=41min, failures=[{chunk_id, cause}]}
-    GW->>E: 热度下沉（高峰前 T−30min，L1→L0 预分发，同消息族）
+    CAT->>GW: P1：StatsAggregate{window=24h, per_fp={hits, distinct_sessions, regions, hour_hist, ttft_saved_ms}}
+    GW->>GW: P2：准入评分 + PreDistPlan 决策<br/>评分 = E[复用/天] × C_recompute − C_store − C_transfer − C_sew<br/>决定哪些 fp · 何时 · 哪些 POP · 哪一层
+    GW->>Core: P3：PreDistOrder{plan_id, items=[{fp, chunk_ids[], target_pops, target_layer=L1, ttl=7d, dedup=true}], window=02:00–05:00_local, bw_budget_gbps=40, precedence=3}
+    Core->>POP: P4：KVStreamPush{plan_id, fp, chunks[]}（AIMD 拥塞控制 · 微块多源聚合）
+    POP-->>Core: P5：ChunkAck{chunk_id, bytes, rtt_ms, goodput_gbps}
+    POP->>GW: P6：ReplicaReport{fp, node=pop-x, layer=L1, ttl, lease}（副本落位上报）
+    GW->>CAT: P7：CatalogUpsert{fp→pop-x, layer=L1, ttl, lease}
+    POP->>GW: P8：PlanFeedback{plan_id, done=18/20, bytes=5.8GB, duration=41min, failures=[{chunk_id, cause}]}
+    GW->>E: P9：热度下沉（高峰前 T−30min，L1→L0 预分发，同消息族）
     Note over CAT,GW: 触发器三类：① 周期低谷窗口（夜间批发带宽）<br/>② 预峰窗口 T−30min（§6.4 周期性统计）<br/>③ HotRise 事件（新前缀热度阈值突破，事件驱动即时分发）
 ```
+
+**消息逐条说明（预分发决策，对应时序图 P1–P9）**：
+
+- **P1**：KV 目录向网关推送 `StatsAggregate`。**作用**：目录（充分累积了 `HeatIncr`/`SegmentReport` 的热度与共享度）周期性向网关投喂聚合统计，作为"推什么"的数据来源。**参数**：`window=24h`（统计窗口）、`per_fp`（每个指纹的：`hits` 命中数、`distinct_sessions` 独立会话数、`regions` 区域分布、`hour_hist` 小时直方图、`ttft_saved_ms` 累计节省时延）。
+- **P2**：网关本地决策（自消息）。**作用**：准入评分 = 复用收益 − 存储 − 传输 − 缝合，只有评分 > 0 且共享度达标才入境；据此生成 PreDistPlan——**哪些 fp、什么时间窗口、发往哪些 POP、落到哪一层**。这是全流程的"决策中枢"。**参数**：评分公式各成本项（复用收益/C_store/C_transfer/C_sew）。
+- **P3**：网关发送 `PreDistOrder` 给中心。**作用**：把分发决策下发给中心（Origin Store），中心据此把已有段推送出去，**不重算**。**参数**：`plan_id`（计划标识，供复盘关联）；`items[{fp, chunk_ids, target_pops, target_layer, ttl, dedup}]`（每个模块发哪些块、到哪些 POP、落哪层、存活多久、是否去重）；`window`（低谷时间窗口，避免挤占日间带宽）；`bw_budget_gbps`（带宽上限）；`precedence`（优先级，多计划排序）。
+- **P4**：中心发送 `KVStreamPush` 给 POP。**作用**：Origin Store 取出已有段，按 AIMD 拥塞控制推送到区域 POP——这是"分发"落地，与 §4.5"生产"相对（一个算、一个搬）。**参数**：`plan_id`、`fp`、`chunks[]`。
+- **P5**：POP 返回 `ChunkAck` 给中心。**作用**：逐块确认，并把实测带宽/时延反馈回来，更新 EWMA 带宽估计 B̂（§5.2 博弈引擎同一份链路画像）。**参数**：`chunk_id`、`bytes`、`rtt_ms`、`goodput_gbps`。
+- **P6**：POP 发送 `ReplicaReport` 给网关。**作用**：副本已落定的上报——**目录仅网关可写**，故 POP 不能直写目录，而是把落位信息交给网关登记。**参数**：`fp`、`node=pop-x`、`layer`、`ttl`、`lease`。
+- **P7**：网关写 `CatalogUpsert` 到 KV 目录。**作用**：把新副本落位写进目录，之后该区域的 RouteLookup 就能命中这份副本。**参数**：`fp → pop-x`、`layer`、`ttl`、`lease`。
+- **P8**：POP 发送 `PlanFeedback` 给网关。**作用**：窗口复盘——完成比、耗时、失败明细回传，网关据此调整明日计划（升/降层、撤分发、改窗口）。**参数**：`plan_id`、`done/total`、`bytes`、`duration`、`failures[{chunk_id, cause}]`。
+- **P9**：网关将热度数据下沉到边缘。**作用**：高峰前 T−30min 把 L1 的热段进一步下沉到 L0 边缘（同消息族），使边缘在高峰期直接命中、无需回源。**参数**：下沉的 fp/chunk 清单 + 目标边缘。
 
 **消息与关键参数表：**
 
@@ -674,7 +836,7 @@ T_net      =  T₀ + s·L_miss / (B̂·C)  +  T_decompress  +  T_sew          T_
 
 V3 修正三处（评审意见）：① **补 T_decompress**——无 SmartNIC 的节点上解压 8 GB 约 1 s，不可忽略；② **补 T_sew**——命中 ≠ 免费，PIC 装配的边界缝合（k 值 × 块数 token 重算 + RoPE 重旋）应计入；③ **R̂ 逐节点实测**——边缘"轻量增量 Prefill"硬件的 R 可能比中心低 5–10 倍，不能全系统统一取 8×H100 档。
 
-数值示例（沿用 §1.4 参数）：L_miss = 20K token → 4× 压缩后 1.6 GB；名义 10 Gbps 拥塞退化 ~0.1 GB/s → T_net ≈ 15 s；T_compute = 20K ÷ 10K ≈ 2 s → 果断放弃拉取、本地重算。
+数值示例（沿用 §1.5 参数）：L_miss = 20K token → 4× 压缩后 1.6 GB；名义 10 Gbps 拥塞退化 ~0.1 GB/s → T_net ≈ 15 s；T_compute = 20K ÷ 10K ≈ 2 s → 果断放弃拉取、本地重算。
 
 ### 5.3 类 TCP 拥塞控制的决策引擎（V3 补强）
 
@@ -714,27 +876,42 @@ V3 修正三处（评审意见）：① **补 T_decompress**——无 SmartNIC �
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant A as Agent（新加坡）
     participant GW as ① 全局网关（仲裁）
     participant E as ⑦ 边缘节点 edge-sg-03（亲和节点）
     participant CAT as ② KV 目录
     participant Core as ⑤ 中心 Prefill DC core-07
-    A->>E: 第 7 轮请求{sid, manifest, 新增 40K token（大 RAG 增量）}
-    E->>E: 本地评估：L_miss=40K · R̂_edge=1.2K tok/s · 队列深<br/>T_local≈33s · T_fetch≈6.1s（POP 链路劣化）· 均 > SLA 2s
-    E->>GW: DegradationRequest{req_id, sid, cause={code=TTFT_RISK, eta_ms=33000, budget_ms=2000}, local_state={prefilled=60K/100K, kv_chunks_ready=45/120, r_hat_tokps=1200}, options={T_local=33s, T_fetch=6.1s, T_center≈2.6s}, recommend=CENTER}
-    GW->>GW: 全局仲裁：中心队列浅 · 骨干健康 · 成本可接受<br/>（对照级联降级阶梯：异步/批处理已被先行牺牲）
-    GW->>Core: TakeoverOrder{req_id, sid, manifest, missing_range=[60K,100K], edge_state_ref, handoff=PARTIAL_KV_UPLOAD, deadline_ttft=2600ms}
-    GW->>E: DegradationGrant{mode=CENTER_TAKEOVER, target=core-07, handoff_token, relay=EDGE_RELAY, keep_session=true}
-    E->>Core: KVHandoffStream{sid, chunks=[#0–#44 已算段·压缩], d_chain_head=fp(D7)}（骨干 100 Gbps · ~1.2 GB ≈ 0.3 s）
-    Core->>Core: 增量补算 [60K,100K]（若骨干也劣化 → 全量重算兜底：宁可重算绝不死等）
-    Core-->>E: TokenStream{req_id, seq}（Edge 作中继）
-    E-->>A: TokenStream（客户端连接不变 · 无感切换）
-    GW->>CAT: 降级审计{cause, node, ts, cost 归属=边缘池} + HeatIncr
-    Core->>GW: SessionReport{sid, d_chain_head=fp(D8)}（接管完成 · 上报会话态）
-    GW->>CAT: SessionUpsert{sid, primary=core-07(临时), d_chain_head=fp(D8)}
+    A->>E: P1：第 7 轮请求{sid, manifest, 新增 40K token（大 RAG 增量）}
+    E->>E: P2：本地评估：L_miss=40K · R̂_edge=1.2K tok/s · 队列深<br/>T_local≈33s · T_fetch≈6.1s（POP 链路劣化）· 均 > SLA 2s
+    E->>GW: P3：DegradationRequest{req_id, sid, cause={code=TTFT_RISK, eta_ms=33000, budget_ms=2000}, local_state={prefilled=60K/100K, kv_chunks_ready=45/120, r_hat_tokps=1200}, options={T_local=33s, T_fetch=6.1s, T_center≈2.6s}, recommend=CENTER}
+    GW->>GW: P4：全局仲裁：中心队列浅 · 骨干健康 · 成本可接受<br/>（对照级联降级阶梯：异步/批处理已被先行牺牲）
+    GW->>Core: P5：TakeoverOrder{req_id, sid, manifest, missing_range=[60K,100K], edge_state_ref, handoff=PARTIAL_KV_UPLOAD, deadline_ttft=2600ms}
+    GW->>E: P6：DegradationGrant{mode=CENTER_TAKEOVER, target=core-07, handoff_token, relay=EDGE_RELAY, keep_session=true}
+    E->>Core: P7：KVHandoffStream{sid, chunks=[#0–#44 已算段·压缩], d_chain_head=fp(D7)}（骨干 100 Gbps · ~1.2 GB ≈ 0.3 s）
+    Core->>Core: P8：增量补算 [60K,100K]（若骨干也劣化 → 全量重算兜底：宁可重算绝不死等）
+    Core-->>E: P9：TokenStream{req_id, seq}（Edge 作中继）
+    E-->>A: P10：TokenStream（客户端连接不变 · 无感切换）
+    GW->>CAT: P11：降级审计{cause, node, ts, cost 归属=边缘池} + HeatIncr
+    Core->>GW: P12：SessionReport{sid, d_chain_head=fp(D8)}（接管完成 · 上报会话态）
+    GW->>CAT: P13：SessionUpsert{sid, primary=core-07(临时), d_chain_head=fp(D8)}
     Note over CAT,GW: 任务完成后：D 随行复制回流 pop-sg（闲时）· 亲和性回归用户区域
 ```
+
+**消息逐条说明（边缘 SLA 降级与中心接管，对应时序图 P1–P13）**：
+
+- **P1**：Agent 直连边缘节点发送第 7 轮请求。**作用**：会话此前亲和路由在边缘，本轮新增 40K token 的大 RAG 增量，是压在边缘上的超常规负载——降级的诱因从这条开始。**参数**：`sid`、`manifest`、新增 40K token（大 RAG 增量）。
+- **P2**：边缘本地评估（自消息）。**作用**：边缘在准入阶段就算三候选耗时，发现自己满足不了 SLA，触发降级评估（创新点三的运行时化）。**参数**：`L_miss=40K`（缺 40K token）、`R̂_edge=1.2K tok/s`（边缘实测 Prefill 吞吐）、队列深（本地排队）→ 结论 `T_local≈33s`、`T_fetch≈6.1s` 均 > SLA 2s。
+- **P3**：边缘发送 `DegradationRequest` 给网关。**作用**：边缘**无权直接占用全局中心容量**，必须上报网关仲裁（中心是全局共享资源，需统一调度与公平性）。**参数**：`cause{code=TTFT_RISK, eta_ms, budget_ms}`（降级原因与超预算幅度）；`local_state{prefilled=60K/100K, kv_chunks_ready, r_hat}`（已算到哪、现场进度，供中心增量接管）；`options{T_local, T_fetch, T_center}`（附上完整三候选评估，网关只裁决不重算）；`recommend=CENTER`（边缘的建议）。
+- **P4**：网关全局仲裁（自消息）。**作用**：网关权衡中心队列、骨干健康、成本、多租户公平，对照级联降级阶梯（异步/批处理已被先行牺牲）决定是否批准中心接管。**参数**：中心队列长度、骨干带宽、成本、公平配额。
+- **P5**：网关发送 `TakeoverOrder` 给中心。**作用**：授权中心接管该任务，只补算缺失段（MVCC 保证已算段不重算），把昂贵算力用在刀刃上。**参数**：`req_id`、`sid`、`missing_range=[60K,100K]`（只需补算的缺口）、`handoff=PARTIAL_KV_UPLOAD`（部分上传模式）、`deadline_ttft=2600ms`。
+- **P6**：网关发送 `DegradationGrant` 给边缘。**作用**：告知边缘接管已批准与续服方式（中继），边缘据此把已算段交给中心并保持客户端连接。**参数**：`mode=CENTER_TAKEOVER`、`target=core-07`、`handoff_token`、`relay=EDGE_RELAY`、`keep_session=true`。
+- **P7**：边缘发送 `KVHandoffStream` 给中心。**作用**：把 60K token 的已算段（压缩）上传中心，省掉这部分的中心重算；只传 POP/Core 无副本的缺失段，已有副本按 chunk_id 引用。**参数**：`sid`、`chunks[#0–#44]`（已算段）、`d_chain_head=fp(D7)`（当前 D 链头）。
+- **P8**：中心本地动作（自消息）：增量补算 [60K,100K]。**作用**：中心用强算力补算缺口；若骨干也劣化致上传失败，则退化为全量重算兜底——宁可重算绝不死等。
+- **P9**：中心回传 `TokenStream` 给边缘（中继）。**作用**：中心 Decode 的 token 经边缘中继回传，保持客户端原连接不变。**参数**：`req_id`、`seq`。
+- **P10**：边缘转发 `TokenStream` 给 Agent。**作用**：对客户端完全无感（连接未变，只是上游从本地切到中心）。**参数**：同 P9。
+- **P11**：网关写 `降级审计 + HeatIncr` 到 KV 目录。**作用**：留下降级审计流水（原因/节点/时间/成本归属=边缘池），进入部件⑫遥测台账。**参数**：`cause`、`node`、`ts`、`cost` 归属。
+- **P12**：中心发送 `SessionReport` 给网关。**作用**：接管完成后上报新会话态（D 链推进到 D8），因**目录仅网关可写**而走网关。**参数**：`sid`、`d_chain_head=fp(D8)`。
+- **P13**：网关写 `SessionUpsert` 到 KV 目录。**作用**：把会话 primary 临时指向 core-07、D 链头更新；任务结束后 D 随行复制回流区域 POP，primary 再复位移回区域（闭环）。**参数**：`sid`、`primary=core-07(临时)`、`d_chain_head=fp(D8)`。
 
 **消息与关键参数表：**
 
@@ -748,11 +925,11 @@ sequenceDiagram
 | `SessionReport` | Core→GW | sid、d_chain_head | 接管完成后上报会话态（**目录仅网关可写**） |
 | `SessionUpsert` | GW→CAT | sid、primary、d_chain_head | 网关登记接管后的会话句柄（临时 primary=core-07） |
 
-**两种客户端可见性（对应 §3.4 两方式）**：
-- **方式 a（网关直连）**：上图中 Edge 中继可省——网关直接把上游从 E 切到 Core，**客户端零改动零感知**（这是方式 a 的决定性优势）；
-- **方式 b（先查后连）**：Agent 与 Core 无连接，需 `StreamMigrate`：GW→Agent 下发 `{new_endpoint=core-07, resume_token=签名 JWT{sid, seq, exp}}`，Agent 携 `Resume: token` 重连，流从最后 seq 无损续传。
+**两种客户端可见性（对应 §3.4 两方式；方式 b 为默认主路径，方式 a 为备选）**：
+- **方式 a（网关直连，备选）**：上图中 Edge 中继可省——网关直接把上游从 E 切到 Core，**客户端零改动零感知**（这是方式 a 的相对优势，仅在该备选部署形态下成立）；
+- **方式 b（先查后连，默认）**：Agent 与 Core 无连接，需 `StreamMigrate`：GW→Agent 下发 `{new_endpoint=core-07, resume_token=签名 JWT{sid, seq, exp}}`，Agent 携 `Resume: token` 重连，流从最后 seq 无损续传。
 
-**设计注记**：① handoff 三档：`PARTIAL_KV_UPLOAD`（默认，省算力）/ `FULL_RECOMPUTE`（骨干也劣化时的兜底）/ `TOKEN_RESUME_ONLY`（已生成 token 足够、仅续流）；② 接管是**临时态**——任务完成后 D 随行复制回流用户区域 POP（§3.5），亲和回归区域，避免会话被永久钉在中心；③ 每次降级产生审计流水与成本归属（which 池买单），进入 §6.2 部件⑫ 的遥测台账。
+**设计注记**：① handoff 三档：`PARTIAL_KV_UPLOAD`（默认，省算力）/ `FULL_RECOMPUTE`（骨干也劣化时的兜底）/ `TOKEN_RESUME_ONLY`（已生成 token 足够、仅续流）；② 接管是**临时态**——任务完成后 D 随行复制回流用户区域 POP（§3.5），回流完成由 POP 上报 `SessionReport` → 网关 `SessionUpsert` 将 primary 复位回区域、亲和回归，避免会话被永久钉在中心；③ **咬合粒度**——`KVHandoffStream` 只传 POP/Core 无副本的缺失段（D 增量 + 未算段），A/B/C 已有副本按 `chunk_id` 直接引用，避免全量重传；④ 每次降级产生审计流水与成本归属（which 池买单），进入 §6.2 部件⑫ 的遥测台账。
 
 ### 5.5 逐类别的经济博弈处置（保留自 V2 §4.4）
 
@@ -791,7 +968,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | ① | **全局路由网关（GSLB）** | 请求接入；RouteLookup 亲和路由（§3）；内嵌 T_net/T_compute/T_center 博弈与 **DegradationRequest 仲裁（§5.4）**；**PreDistPlan 分发决策（§4.6）**；熔断降级；级联降级阶梯 | 一、二、三 | AIBrix 路由思想、GORGO |
 | ② | **KV 全局目录（Catalog）** | **唯一事实源、仅网关读写**：模块指纹（§2 规范）→ 位置映射（Radix/DHT 双层）；兼容性清单 + 依赖 DAG；元数据/版本/租约失效；影子统计与热度画像（§6.4）。非网关节点经 `SegmentReport`/`SessionReport`/`ReplicaReport` 上报网关后写入 | 一、二 | LMCache 内容寻址、etcd（分区所有权，网关单写入口） |
-| ③ | **潮汐调度与成本优化器** | PreDistOrder 编排（§4.6）；**D 随行复制（§3.5）**；电价/算力套利；热点预测与预峰窗口 | 二 | PrfaaS 双时间尺度调度 |
+| ③ | **潮汐调度与成本优化器（内嵌于①网关）** | PreDistOrder 编排（§4.6）；**D 随行复制（§3.5）**；电价/算力套利；热点预测与预峰窗口 | 二 | PrfaaS 双时间尺度调度 |
 | ④ | **信任与验证引擎**（P2P 专属，**非主线实验分支**） | 节点信任分；蜜罐注入；ZKP 验证；Token 结算 | 二（P2P 扩展） | 研究前沿（§7.3） |
 | ⑫ | **质量遥测与金丝雀重算（V3 新增）** | 采样流量"CDN 路径 vs 全量重算"语义 diff；金标集回归；装配上下文溯源标签（模块来源/版本/路径）；静默劣化告警与定责 | 全系统底座 | 需自研（评审补强） |
 
@@ -821,7 +998,7 @@ flowchart TB
     subgraph CP["控制平面"]
         GW["① 全局路由网关<br/>亲和路由 · 博弈仲裁 · 预分发决策 · 降级阶梯"]
         CAT["② KV 全局目录（hint-not-truth）<br/>指纹寻址（§2）· 依赖 DAG · 影子统计"]
-        TIDAL["③ 潮汐调度器<br/>PreDistOrder · D 随行复制 · 电价套利"]
+        TIDAL["③ 潮汐调度器（内嵌①）<br/>PreDistOrder · D 随行复制 · 电价套利"]
         TRUST["④ 信任引擎（P2P 非主线）"]
         QT["⑫ 质量遥测与金丝雀重算（V3）"]
     end
@@ -842,6 +1019,8 @@ flowchart TB
     end
 
     USER -->|RouteQuery / completions| GW
+    USER -.->|方式 b 直连 Endpoint（RouteGrant 后）| EDGE
+    USER -.->|冷未命中直连（§4.5）| CORE
     GW -.-> CAT
     GW -.-> TIDAL
     TIDAL -.->|PreDistOrder| CORE
@@ -865,7 +1044,6 @@ flowchart TB
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant A as 业务流量（Agent）
     participant GW as ① 全局网关
     participant CAT as ② KV 目录
@@ -874,31 +1052,57 @@ sequenceDiagram
 
     rect rgb(245,245,245)
     Note over CAT: 阶段 0：Day 0–7 影子模式（不准入 · 不预分发）
-    A->>GW: 正常推理请求{sid, prompt, sla}
-    GW-->>A: 常规路由（地理就近 + 本地重算/回源）
-    GW-.->CAT: ShadowLog{ts, sid, module_fps 或前缀滚动哈希, biz_tag, region, sla_class, token_len}
-    GW-.->CAT: CompletionMeta{ttft_ms, prefill_tokens, cache_hit_flags}
-    CAT->>CAT: 每日批处理 StatsAggregate → PrefixProfile<br/>{按类别聚合：hits, distinct_sessions, 小时直方图, 区域分布, 共享度, len 分布}
+    A->>GW: P1：正常推理请求{sid, prompt, sla}
+    GW-->>A: P2：常规路由（地理就近 + 本地重算）
+    GW-.->CAT: P3：ShadowLog{ts, sid, module_fps 或前缀滚动哈希, biz_tag, region, sla_class, token_len}
+    GW-.->CAT: P4：CompletionMeta{ttft_ms, prefill_tokens, cache_hit_flags}
+    CAT->>CAT: P5：每日批处理 StatsAggregate → PrefixProfile<br/>{按类别聚合：hits, distinct_sessions, 小时直方图, 区域分布, 共享度, len 分布}
     end
 
     rect rgb(240,248,240)
     Note over CAT: 阶段 1：Day 7 准入决策（此后每日增量）
-    CAT->>CAT: AdmissionDecision{评分 = E[复用/天]×C_recompute − C_store − C_transfer − C_sew}
-    CAT-->>GW: AdmissionList{admit=[{fp, layer, ttl}], no_store=[...], warm_only=[...]}
-    GW->>Core: PrefillOrder{admitted_fps[], codec=cg-L4, priority, budget_usd}
-    Core->>POP: KVStreamPush{chunks[]}（夜间低谷窗口）
-    POP->>GW: ReplicaReport{fp→pop, layer, ttl}（落位上报）
-    GW->>CAT: CatalogUpsert{fp→pop, layer, ttl}
+    CAT->>CAT: P6：AdmissionDecision{评分 = E[复用/天]×C_recompute − C_store − C_transfer − C_sew}
+    CAT-->>GW: P7：AdmissionList{admit=[{fp, layer, ttl}], no_store=[...], warm_only=[...]}
+    GW->>Core: P8：PrefillOrder{admitted_fps[], codec=cg-L4, priority, budget_usd}
+    Core->>POP: P9：KVStreamPush{chunks[]}（夜间低谷窗口）
+    POP->>GW: P10：ReplicaReport{fp→pop, layer, ttl}（落位上报）
+    GW->>CAT: P11：CatalogUpsert{fp→pop, layer, ttl}
     end
 
     rect rgb(245,240,250)
     Note over CAT: 阶段 2：Day 7+ 稳态闭环
-    A->>GW: 请求（首个命中）
-    GW->>CAT: RouteLookup{fps}
-    CAT-->>GW: RouteHit{pop-sg-1}
-    CAT->>CAT: 双时间尺度反馈{7d 滑窗 + 24h 快窗} → 升层/降层/撤准入
+    A->>GW: P12：请求（首个命中）
+    GW->>CAT: P13：RouteLookup{fps}
+    CAT-->>GW: P14：RouteHit{pop-sg-1}
+    CAT->>CAT: P15：双时间尺度反馈{7d 滑窗 + 24h 快窗} → 升层/降层/撤准入
     end
 ```
+
+**消息逐条说明（冷启动三阶段，对应时序图 P1–P15）**：
+
+**阶段 0·影子模式（Day 0–7）：**
+
+- **P1**：业务流量（Agent）发送 `正常推理请求` 给全局网关。**作用**：影子期不做任何缓存优化，纯采集——普通流量照常进来，用以无偏地观察真实访问分布。**参数**：`sid`、`prompt`、`sla`。
+- **P2**：网关返回 `常规路由`（地理就近 + 本地重算）。**作用**：此时无 CDN 目录可命中，退化为传统就近调度，确保影子期不影响服务质量。**参数**：路由目标、TTFT 等常规指标。
+- **P3**：网关旁路异步写 `ShadowLog` 到 KV 目录。**作用**：**无偏采样**——异步旁路记录，绝不阻塞请求路径、不做任何准入；这是三维统计（周期/区域/特征）的原始数据。**参数**：`ts`（时间戳）、`sid`、`module_fps/前缀哈希`（对老客户端用前缀滚动哈希兼容）、`biz_tag`（业务线标签）、`region`、`sla_class`、`token_len`。
+- **P4**：网关旁路异步写 `CompletionMeta` 到 KV 目录。**作用**：记录每次请求的真实执行代价，作为日后"复用收益 = 命中 × 重算成本"的基线证据。**参数**：`ttft_ms`、`prefill_tokens`、`cache_hit_flags`。
+- **P5**：目录内部批处理（自消息）：`StatsAggregate → PrefixProfile`。**作用**：每日聚合为前缀画像，产出三维统计：When（按小时的周期规律，定预峰窗口）、Where（区域分布，定副本落点）、What（共享度/长度，定准入与层级）。
+
+**阶段 1·准入决策（Day 7 起）：**
+
+- **P6**：目录内部（自消息）：`AdmissionDecision`。**作用**：按准入评分 = 复用收益 − 存储 − 传输 − 缝合，判定每个前缀"该不该缓存、放哪层、活多久"，共享度 ≈ 1 判 No-Store。**参数**：评分各成本项、共享度阈值。
+- **P7**：目录返回 `AdmissionList` 给网关。**作用**：把准入结论（白名单 + 分层 + 生命周期）交给网关执行。**参数**：`admit[{fp, layer, ttl}]`（准入清单）、`no_store`（即算即焚）、`warm_only`（仅值守留、不入预分发）。
+- **P8**：网关发送 `PrefillOrder` 给中心。**作用**：按准入白名单，触发首次**批量**生产正式 KV 资产（生产逻辑同 §4.5 的中心 Prefill，只是批量、主动触发）。**参数**：`admitted_fps[]`、`codec=cg-L4`、`budget_usd`。
+- **P9**：中心发送 `KVStreamPush` 给 POP。**作用**：夜间低谷把新生产的 KV 资产推到区域 POP。**参数**：`chunks[]`。
+- **P10**：POP 发送 `ReplicaReport` 给网关。**作用**：副本落位上报（**目录仅网关可写**，POP 不直写目录）。**参数**：`fp`、`node`、`layer`、`ttl`。
+- **P11**：网关写 `CatalogUpsert` 到 KV 目录。**作用**：副本正式登记，后续请求即可命中。**参数**：`fp → pop`、`layer`、`ttl`。
+
+**阶段 2·稳态闭环（Day 7+）：**
+
+- **P12**：业务流量发送请求给网关。**作用**：第一个命中新副本的请求，冷启动进入稳态的标志。**参数**：`sid`、`prompt`、`sla`。
+- **P13**：网关发送 `RouteLookup` 给 KV 目录。**作用**：查该前缀现在哪里有副本。**参数**：`fps`。
+- **P14**：目录返回 `RouteHit`（`pop-sg-1`）。**作用**：命中区域 POP 的预分发副本，网关据此把请求路由到 pop-sg-1（亲和命中生效）。
+- **P15**：目录内部（自消息）：`双时间尺度反馈`。**作用**：7d 滑窗 + 24h 快窗持续滚动，热度升则升层/预分发、热度降则降层/成本加权驱逐或改判 No-Store——目录与真实访问分布保持同步。
 
 **消息与关键参数表：**
 
@@ -928,6 +1132,8 @@ POST /v1/modules/declare
 ```
 
 业务侧显式声明预期调用量与依赖结构 → 首次保守 TTL 的快速准入 → 验证后转正式。模型/知识库版本变更时（MVCC ⑪）：目录批量失效 KV 本体，**但统计画像与准入决策跨 FP_struct 沿用**——冷启动只在首次部署与新业务接入时支付一次。
+
+**统计口径统一（V3 澄清）**：影子期用 `ShadowLog`/`CompletionMeta` 采集基线；稳态后复用统计统一走 `HeatIncr`/`SegmentReport` 累计，准入评分（`AdmissionDecision`）消费同一张热度表——两套词汇是时序上的前后关系，非并行两套系统。
 
 ### 6.5 与现有系统的关系（保留）
 
@@ -1087,7 +1293,7 @@ KV Cache CDN 的创新，**不在于发明更快的广域传输协议，而在�
 
 ---
 
-© 2026 · 本报告依赖 [P1]–[P16] 的架构框架与实测数据；§1.4 计算过程可按文中参数复现；V3 消息级设计（§2–§6）为构想规格，接口字段名以实现落地版本为准。
+© 2026 · 本报告依赖 [P1]–[P16] 的架构框架与实测数据；§1.5 计算过程可按文中参数复现；V3 消息级设计（§2–§6）为构想规格，接口字段名以实现落地版本为准。
 
 
 
