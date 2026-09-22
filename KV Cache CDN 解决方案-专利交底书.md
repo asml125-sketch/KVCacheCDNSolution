@@ -70,14 +70,14 @@ flowchart TB
     E2["边缘推理节点 B<br/>持有段 {A,C,部分D}"]
     E3["边缘推理节点 C<br/>持有段 {B,部分C}"]
 
-    U -->|RouteQuery / RouteGrant（方式 b）| GW
-    GW -.->|目录读写 / 分发决策| CENTER
-    CENTER ==>|预分发不同 KV 段| E1
-    CENTER ==>|预分发不同 KV 段| E2
-    CENTER ==>|预分发不同 KV 段| E3
-    U -.->|直连选中节点| E1
-    E1 ==>|TokenStream| U
-    CENTER -.->|SegmentReport 上报段指纹| GW
+    U -->|P1：RouteQuery / RouteGrant（方式 b）| GW
+    GW -.->|P2：目录读写 / 分发决策| CENTER
+    CENTER ==>|P3：预分发不同 KV 段| E1
+    CENTER ==>|P4：预分发不同 KV 段| E2
+    CENTER ==>|P5：预分发不同 KV 段| E3
+    U -.->|P6：直连选中节点| E1
+    E1 ==>|P7：TokenStream| U
+    CENTER -.->|P8：SegmentReport 上报段指纹| GW
 ```
 
 #### 创新点一：亲和性路由（方式 b 为主路径）

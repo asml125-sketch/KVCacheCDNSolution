@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KV Cache CDN — 立项汇报</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --panel2:#f0f2f5; --line:#e2e6ec;
+    --text:#1a1e26; --muted:#7a838d; --red:#c7000b; --blue:#1e6fff;
+    --green:#2f9e5f; --amber:#e08a00;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{width:100%;height:100%;background:var(--bg);overflow:hidden;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+    color:var(--text); -webkit-font-smoothing:antialiased;
+  }
+  .slide{
+    position:fixed;inset:0;display:none;flex-direction:column;
+    padding:6.2vh 5.2vw 6vh; background:var(--bg);
+  }
+  .slide::before{content:"";position:absolute;top:0;left:0;right:0;height:4px;background:var(--red);}
+  .slide.active{display:flex;}
+
+  /* 头部 */
+  .head{display:flex;align-items:baseline;gap:16px;margin-bottom:2.6vh;border-bottom:2px solid var(--red);padding-bottom:1.6vh;}
+  .head .no{font-size:1.1rem;font-weight:800;color:var(--red);letter-spacing:1px;}
+  .head h2{font-size:clamp(1.5rem,2.6vw,2.2rem);font-weight:800;letter-spacing:.5px;color:var(--text);}
+  .head .sub{font-size:.95rem;color:var(--muted);}
+
+  .body{flex:1;display:flex;flex-direction:column;min-height:0;gap:2vh;}
+
+  /* 通用组件 */
+  .quote{background:#fef4f4;border-left:4px solid var(--red);border-radius:8px;padding:1.7vh 1.6vw;
+    font-size:clamp(1.0rem,1.6vw,1.25rem);font-weight:700;line-height:1.6;color:#3c1216;}
+  .num{color:var(--red);font-weight:800;}
+  .warn{color:var(--red);font-weight:800;}
+  .muted{color:var(--muted);}
+
+  /* 卡片网格 */
+  .cards{display:grid;gap:1.4vh 1.2vw;}
+  .cards.c4{grid-template-columns:repeat(2,1fr);}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.8vh 1.4vw;box-shadow:0 1px 3px rgba(30,41,59,.05);}
+  .card .t{font-size:clamp(.95rem,1.3vw,1.15rem);font-weight:800;margin-bottom:.7vh;display:flex;align-items:center;gap:8px;}
+  .card .t .ic{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.8rem;flex:none;}
+  .ic.cost{background:rgba(199,0,11,.1);color:var(--red);}
+  .ic.lat{background:rgba(224,138,0,.14);color:var(--amber);}
+  .ic.cap{background:rgba(30,111,255,.12);color:var(--blue);}
+  .ic.loc{background:rgba(47,158,95,.12);color:var(--green);}
+  .card .d{font-size:.92rem;line-height:1.55;color:#3c4650;}
+  .card .d b{color:var(--red);}
+  .card .ana{font-size:.82rem;color:var(--muted);margin-top:.6vh;}
+
+  /* 三栏 */
+  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.2vw;flex:1;min-height:0;}
+  .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.6vh 1.3vw;display:flex;flex-direction:column;min-height:0;overflow:hidden;box-shadow:0 1px 3px rgba(30,41,59,.05);}
+  .col h3{font-size:1.05rem;margin-bottom:1.4vh;padding-bottom:.8vh;border-bottom:2px solid var(--line);color:var(--text);}
+  .kpi{display:flex;flex-direction:column;gap:1.5vh;margin-bottom:1vh;}
+  .kpi .k{display:flex;flex-direction:column;}
+  .kpi .kv{font-size:clamp(1.5rem,2.4vw,2.1rem);font-weight:900;color:var(--red);line-height:1.1;}
+  .kpi .kl{font-size:.82rem;color:var(--amber);font-weight:800;margin:.2vh 0 .3vh;}
+  .kpi .kd{font-size:.82rem;color:#4a525c;line-height:1.5;}
+  .do li,.dont li{font-size:.9rem;line-height:1.5;margin-bottom:.85vh;color:#3c4650;}
+  .do li b{color:var(--green);}
+  .dont li b{color:var(--red);}
+  .inv{display:flex;flex-direction:column;gap:1.2vh;}
+  .inv .i{background:var(--panel2);border-radius:8px;padding:1vh 1vw;}
+  .inv .it{font-weight:800;font-size:.95rem;color:var(--red);}
+  .inv .id{font-size:.84rem;color:#4a525c;line-height:1.5;}
+
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;font-size:clamp(.8rem,1.1vw,.95rem);}
+  th,td{border:1px solid var(--line);padding:.85vh .7vw;text-align:left;vertical-align:top;}
+  th{background:var(--panel2);color:var(--text);font-weight:700;letter-spacing:.5px;}
+  td b{color:var(--red);}
+  td .usp{color:var(--red);font-weight:700;}
+
+  /* 图 + 表 */
+  .figtable{display:grid;grid-template-columns:3fr 2fr;gap:1.2vw;flex:1;min-height:0;}
+  .fig{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;}
+  .fig svg{width:100%;height:100%;}
+
+  /* 热点卡片 */
+  .hot{display:grid;grid-template-columns:repeat(3,1fr);gap:1vh 1vw;}
+  .hotcard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:1.2vh 1vw;box-shadow:0 1px 3px rgba(30,41,59,.04);}
+  .hotcard .ht{font-weight:800;font-size:.95rem;color:var(--text);}
+  .hotcard .hd{font-size:.82rem;color:#4a525c;margin-top:.3vh;line-height:1.45;}
+  .hotcard .ho{font-size:.75rem;color:var(--red);margin-top:.4vh;}
+  .hotcard.win{border-color:var(--red);background:#fef4f4;}
+
+  /* 价值行 */
+  .vals{display:flex;flex-direction:column;gap:1.3vh;flex:1;justify-content:center;}
+  .val{display:flex;align-items:center;gap:1.2vw;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.6vh 1.5vw;box-shadow:0 1px 3px rgba(30,41,59,.05);}
+  .val .emoji{font-size:2rem;flex:none;}
+  .val .vt{font-size:1.1rem;font-weight:800;width:9ch;flex:none;color:var(--text);}
+  .val .vd{font-size:1.0rem;color:#3c4650;line-height:1.6;}
+  .val .vd b{color:var(--red);}
+
+  /* 底部标题栏 */
+  .footer{position:fixed;left:0;right:0;bottom:0;height:4.8vh;display:flex;align-items:center;justify-content:space-between;
+    padding:0 5.2vw;background:#ffffff;border-top:1px solid var(--line);font-size:.85rem;color:var(--muted);z-index:9;}
+  .footer .pg{color:var(--red);font-weight:800;letter-spacing:1px;}
+  .footer .conf{color:var(--red);font-weight:700;}
+  .hint{position:fixed;right:1.4vw;top:1.6vh;font-size:.72rem;color:#aab2bc;z-index:9;}
+
+  /* 封面 */
+  .cover{align-items:center;justify-content:center;text-align:center;}
+  .cover .logo-badge{font-size:.9rem;letter-spacing:3px;color:var(--red);font-weight:800;margin-bottom:2vh;}
+  .cover h1{font-size:clamp(2.8rem,6vw,5rem);font-weight:900;letter-spacing:1px;line-height:1.05;color:var(--text);}
+  .cover h1 .accent{color:var(--red);}
+  .cover .slogan{font-size:clamp(1.1rem,2vw,1.6rem);color:var(--red);font-weight:700;margin-top:2.4vh;}
+  .cover .desc{font-size:clamp(.95rem,1.4vw,1.15rem);color:#4a525c;margin-top:1.2vh;max-width:60ch;line-height:1.7;}
+  .cover .meta{margin-top:5vh;color:#9aa2ad;font-size:.9rem;}
+  .cover .cta{margin-top:3vh;color:var(--red);font-size:.85rem;}
+</style>
+</head>
+<body>
+
+<!-- ============ 封面 ============ -->
+<section class="slide cover active" data-title="封面">
+  <div class="logo-badge">内部汇报 · KV CACHE CDN</div>
+  <h1>KV Cache <span class="accent">CDN</span></h1>
+  <div class="slogan">把 KV Cache 当作内容资产来运营</div>
+  <div class="desc">面向长上下文与多模型 Agent 时代的 LLM 推理基础设施 —— 用调度、数据形态与经济学三件事，把显存墙与地理墙化成一个 CDN 问题来解。</div>
+  <div class="meta">向公司高层汇报 · 2026</div>
+  <div class="cta">← → 翻页 · 点击左右两侧切换</div>
+</section>
+
+<!-- ============ 第 1 页 ============ -->
+<section class="slide" data-title="为什么推理问题变成了 CDN 问题">
+  <div class="head"><span class="no">01</span><h2>为什么推理问题变成了 CDN 问题</h2><span class="sub">四股力量，把 KV Cache 从引擎内存逼成了内容资产</span></div>
+  <div class="body">
+    <div class="cards c4" style="flex:1;">
+      <div class="card">
+        <div class="t"><span class="ic cost">💰</span>经济学驱动 · 成本黑洞</div>
+        <div class="d">Prefill 是算力吞噬者：让不同用户重复算同一份公共前缀（System Prompt、热门文档、工具定义），是对昂贵 GPU 的极大浪费——重复 Prefill 浪费 <b>30–70%</b>，复用是降 TCO 的唯一出路；回源代价是传统 CDN 的 <b>100–1000×</b>。</div>
+        <div class="ana">类比：每个用户都重算一遍「同一个开场白」，就是烧钱。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic lat">⏱</span>性能驱动 · 延迟灾难</div>
+        <div class="d">上下文 4K→128K→<b>1M+</b>，Prefill 从毫秒级跃升到数十秒（100K token 需约 <b>10s</b>），首字延迟彻底摧毁交互式应用体验。唯一解法「空间换时间」——KV 变成需预热、跨网分发、就近读取的「大文件」。</div>
+        <div class="ana">类比：每次提问先「发呆」十几秒，产品必被弃用。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic cap">🧱</span>局部方案失效 · 三堵墙</div>
+        <div class="d">单集群前缀缓存是「漏水的池子」：<b>显存容量墙</b>（并发一大撑爆 HBM，只能拒服务）、<b>冷热驱逐墙</b>（LRU 驱逐后陷「计算—驱逐—再计算」）、<b>数据孤岛墙</b>（集群 A 算过的前缀集群 B 无法复用）。</div>
+        <div class="ana">类比：单机显存是「水杯」，KV 是「消防栓」，一开就溢出。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic loc">🌐</span>网络统计学驱动 · 统计复用</div>
+        <div class="d">大数定律把多区域/多租户的长尾汇聚成「全局热点」，最大化命中率；叠加全球算力成本差 <b>2–5×</b> 与时区潮汐，在「夜间源站」集中 Prefill、「白天边缘」Decode，实现全球算力的 CDN 级调度。</div>
+        <div class="ana">类比：闲置算力变成全球「夜间的 Prefill 工厂」。</div>
+      </div>
+    </div>
+    <div class="quote">「问题成立，不等于『用带宽硬传』的解法成立。正确路径是 <span class="warn">范式重构</span> —— 把 KV Cache 当作内容资产来运营。」</div>
+  </div>
+</section>
+
+<!-- ============ 第 2 页 ============ -->
+<section class="slide" data-title="业界研究热点与技术演进方向">
+  <div class="head"><span class="no">02</span><h2>业界推理研究的热点与技术演进方向</h2><span class="sub">全球共识：这正是所有头部玩家的共同方向</span></div>
+  <div class="body">
+    <div class="fig" style="flex:0 0 25%;">
+      <svg viewBox="0 0 1000 200" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;">
+        <line x1="60" y1="100" x2="940" y2="100" stroke="#d8dbe2" stroke-width="3"/>
+        <g font-family="inherit">
+          <circle cx="100" cy="100" r="7" fill="#c7ccd4"/>
+          <text x="100" y="70" text-anchor="middle" fill="#c7000b" font-size="16" font-weight="800">2023</text>
+          <text x="100" y="48" text-anchor="middle" fill="#1a1e26" font-size="15" font-weight="700">本地分页</text>
+          <text x="100" y="130" text-anchor="middle" fill="#7a838d" font-size="12">vLLM · 消除显存碎片</text>
+
+          <circle cx="280" cy="100" r="7" fill="#c7ccd4"/>
+          <text x="280" y="70" text-anchor="middle" fill="#c7000b" font-size="16" font-weight="800">2023</text>
+          <text x="280" y="48" text-anchor="middle" fill="#1a1e26" font-size="15" font-weight="700">前缀复用</text>
+          <text x="280" y="130" text-anchor="middle" fill="#7a838d" font-size="12">SGLang · 相同前缀只算一次</text>
+
+          <circle cx="460" cy="100" r="7" fill="#c7ccd4"/>
+          <text x="460" y="70" text-anchor="middle" fill="#c7000b" font-size="16" font-weight="800">2024</text>
+          <text x="460" y="48" text-anchor="middle" fill="#1a1e26" font-size="15" font-weight="700">PD 分离</text>
+          <text x="460" y="130" text-anchor="middle" fill="#7a838d" font-size="12">DistServe · Prefill/Decode 分置</text>
+
+          <circle cx="640" cy="100" r="7" fill="#c7ccd4"/>
+          <text x="640" y="70" text-anchor="middle" fill="#c7000b" font-size="16" font-weight="800">2024-25</text>
+          <text x="640" y="48" text-anchor="middle" fill="#1a1e26" font-size="15" font-weight="700">集群池化</text>
+          <text x="640" y="130" text-anchor="middle" fill="#7a838d" font-size="12">Mooncake · 三级池 · 吞吐 +525%</text>
+
+          <circle cx="850" cy="100" r="10" fill="#c7000b"/>
+          <text x="850" y="70" text-anchor="middle" fill="#c7000b" font-size="16" font-weight="800">2025-26</text>
+          <text x="850" y="44" text-anchor="middle" fill="#1a1e26" font-size="15" font-weight="800">全域 CDN</text>
+          <text x="850" y="130" text-anchor="middle" fill="#7a838d" font-size="12">PrfaaS / Internet for KV</text>
+          <text x="850" y="150" text-anchor="middle" fill="#c7000b" font-size="12" font-weight="700">← 本方案所处时代</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="hot" style="flex:1;">
+      <div class="hotcard"><div class="ht">PD 分离成为默认架构</div><div class="hd">Prefill 与 Decode 分池部署已成工业共识。</div><div class="ho">NVIDIA / UCSD / Microsoft</div></div>
+      <div class="hotcard"><div class="ht">集群级 KV 池化进入生产</div><div class="hd">显存/内存/SSD 三级池，多处理 115% 请求。</div><div class="ho">Moonshot / 华为</div></div>
+      <div class="hotcard"><div class="ht">KV 网络层成型</div><div class="hd">专用压缩 3.5–4.3×、位置无关缓存、SmartNIC 卸载。</div><div class="ho">UChicago / Moonshot</div></div>
+      <div class="hotcard"><div class="ht">跨数据中心成为绝对前沿</div><div class="hd">跨 DC Prefill 卸载已验证：吞吐 +54%，P90 TTFT −64%。</div><div class="ho">PrfaaS / An Internet for the KV Cache</div></div>
+      <div class="hotcard"><div class="ht">模型 × 系统协同设计</div><div class="hd">Kimi Linear 混合注意力把 KV 吞吐压低 4–36×。</div><div class="ho">Moonshot</div></div>
+      <div class="hotcard win"><div class="ht" style="color:var(--red);">窗口期 12–18 个月</div><div class="hd">全球仅 <b style="color:var(--red);">2–3 个团队</b>在做跨机房 KV 分发，先发即占标准。</div><div class="ho">战略卡位点</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 第 3 页 ============ -->
+<section class="slide" data-title="方案可行性分析">
+  <div class="head"><span class="no">03</span><h2>方案可行性 —— 关键结论</h2><span class="sub">四条线测算：可行性成立，瓶颈在工程化与标准</span></div>
+  <div class="body">
+    <div class="cards c4" style="flex:1;">
+      <div class="card">
+        <div class="t"><span class="ic cap">⚡</span>时间可行 · 拉取 vs 重算</div>
+        <div class="d">100G 专线 + 4× 压缩，拉取 <b>0.9s</b> vs 本地重算 <b>10s</b>——<b>11× 更快</b>；落到 1G 公网则沦为 <b>80s</b> 灾难。</div>
+        <div class="ana">结论：跨域能否成立，取决于「带宽×压缩」胜过「字节×算力」；模型架构是第一杠杆。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic loc">📉</span>解码收敛 · 向边缘移动</div>
+        <div class="d">流式生成中 RTT 只加一次性偏移、不钳吞吐；多轮 Agent 循环则按轮数累积 RTT。</div>
+        <div class="ana">结论：两层拓扑（中心+区域）是更优默认，L0 仅在语音/合规/隔离场景加密。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic cost">🔬</span>技术可行 · 三条线就位</div>
+        <div class="d">模型侧（MLA/混合）、系统侧（池化/压缩/位置无关）、硬件侧（CXL/SmartNIC）均已成熟。</div>
+        <div class="ana">数字：Mooncake <b>+525% / 115%</b>、PrfaaS <b>+54% / TTFT−64%</b>、LMCache+vLLM <b>+15×</b>。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic lat">💎</span>商业可行 · 场景成立</div>
+        <div class="d">批发带宽下单请求成本降 <b>64%</b>，潮汐卸载降 <b>55%</b>；混合架构下零售带宽也成立。</div>
+        <div class="ana">结论：完整 CDN 形态 <b>TCO −30~45%</b>；适用边界：长上下文&gt;20%、复用率&gt;30%、区域成本差 2–5×。</div>
+      </div>
+    </div>
+    <div class="quote">可行性结论：<span class="warn">成立</span> —— 三条技术线已就位、无不可逾越障碍；<b>瓶颈在工程化与标准</b>，这正是我们可卡位的窗口。</div>
+  </div>
+</section>
+
+<!-- ============ 第 4 页 ============ -->
+<section class="slide" data-title="不做什么 · 做什么 · 怎么做">
+  <div class="head"><span class="no">04</span><h2>不做什么 · 做什么 · 怎么做</h2><span class="sub">先划边界 → 定动作 → 再讲清凭什么的创新</span></div>
+  <div class="body">
+    <!-- 1. 不做什么 -->
+    <div style="flex:0 0 auto;display:flex;flex-direction:column;gap:.9vh;">
+      <div class="quote" style="font-size:.95rem;line-height:1.5;">✘ 不做「在 WAN 上实时硬传几十 GB 的完整 KV」——1 Gbps 下要 <b>80 s</b>，是灾难（§1.5 测算）。</div>
+      <div class="quote" style="font-size:.95rem;line-height:1.5;">✘ 不做「把缓存机械地放各地就完事」——而是<b>让请求找数据</b>（亲和路由）、<b>让预分发只在划算时发生</b>（经济博弈）。</div>
+    </div>
+
+    <!-- 2. 做什么 -->
+    <div style="flex:0 0 auto;">
+      <div style="font-size:.92rem;font-weight:800;color:var(--green);margin-bottom:.7vh;">✔ 做什么（核心五步：把 KV 当内容资产运营）</div>
+      <div style="display:flex;gap:.8vw;">
+        <div class="card" style="flex:1;padding:1vh .8vw;"><div class="t" style="font-size:.9rem;color:var(--red);">① 生产</div><div class="d" style="font-size:.82rem;">中心 Prefill 算 KV、切段算指纹</div></div>
+        <div class="card" style="flex:1;padding:1vh .8vw;"><div class="t" style="font-size:.9rem;color:var(--red);">② 上报</div><div class="d" style="font-size:.82rem;">段 + Hash + 成本上报网关，累计热度</div></div>
+        <div class="card" style="flex:1;padding:1vh .8vw;"><div class="t" style="font-size:.9rem;color:var(--red);">③ 决策</div><div class="d" style="font-size:.82rem;">准入评分 + 博弈，定段 / 时刻 / 节点</div></div>
+        <div class="card" style="flex:1;padding:1vh .8vw;"><div class="t" style="font-size:.9rem;color:var(--red);">④ 预分发</div><div class="d" style="font-size:.82rem;">低谷异步推送高共享段到区域/边缘</div></div>
+        <div class="card" style="flex:1;padding:1vh .8vw;"><div class="t" style="font-size:.9rem;color:var(--red);">⑤ 消费</div><div class="d" style="font-size:.82rem;">亲和路由命中，仅算增量、TTFT 秒级</div></div>
+      </div>
+    </div>
+
+    <!-- 3. 怎么做 -->
+    <div style="flex:0 0 auto;">
+      <div style="font-size:.92rem;font-weight:800;color:var(--red);margin-bottom:.7vh;">💡 怎么做 —— 三大创新点</div>
+      <div class="cards" style="grid-template-columns:repeat(3,1fr);">
+        <div class="card">
+          <div class="t"><span class="ic cap">①</span>缓存亲和性路由</div>
+          <div class="d">让<b>请求找数据</b>、而非数据找请求——按「复用程度 × SLA × 成本」把请求路由到复用最多、最合适的节点（方式 b 直连）。</div>
+        </div>
+        <div class="card">
+          <div class="t"><span class="ic loc">②</span>基于不同 KV 段的统计复用与分发</div>
+          <div class="d">按共享度把 KV 切段、统计复用、差异化<b>预分发</b>到不同节点——不同节点持不同段，命中即免重算。</div>
+        </div>
+        <div class="card">
+          <div class="t"><span class="ic cost">③</span>经济与 SLA 博弈后的存算物理分离</div>
+          <div class="d">每次跨域先算账：<b>本节点推理 或 降级中心推理</b>，博弈结果外显可取证——算存彻底解耦。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 第 4 页 ============ -->
+<section class="slide" data-title="总体架构与数据流">
+  <div class="head"><span class="no">05</span><h2>怎么做 —— 总体架构与数据流</h2><span class="sub">落地路径清晰，各部件都有成熟对标</span></div>
+  <div class="body">
+    <div class="figtable">
+      <div class="fig">
+        <svg viewBox="0 0 720 520" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;">
+          <defs>
+            <marker id="m1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#c7000b"/></marker>
+            <marker id="m2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9aa2ad"/></marker>
+            <marker id="m3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#e08a00"/></marker>
+          </defs>
+
+          <!-- 推理客户端 -->
+          <rect x="280" y="10" width="160" height="42" rx="10" fill="#fdf0f1" stroke="#c7000b" stroke-width="1.5"/>
+          <text x="360" y="36" text-anchor="middle" fill="#b3000a" font-size="15" font-weight="700">推理客户端 / Agent</text>
+
+          <!-- 全局网关（容器：内置 KV 目录 + 潮汐调度器） -->
+          <rect x="235" y="98" width="250" height="132" rx="12" fill="#ffffff" stroke="#c7000b" stroke-width="1.8"/>
+          <text x="360" y="120" text-anchor="middle" fill="#1a1e26" font-size="14" font-weight="800">全局路由网关</text>
+          <rect x="252" y="134" width="96" height="40" rx="8" fill="#f5f6f8" stroke="#c7ccd4" stroke-width="1.2"/>
+          <text x="300" y="158" text-anchor="middle" fill="#1a1e26" font-size="13" font-weight="700">KV 目录</text>
+          <rect x="360" y="134" width="108" height="40" rx="8" fill="#f5f6f8" stroke="#c7ccd4" stroke-width="1.2"/>
+          <text x="414" y="158" text-anchor="middle" fill="#1a1e26" font-size="13" font-weight="700">潮汐调度器</text>
+          <text x="360" y="212" text-anchor="middle" fill="#7a838d" font-size="11">亲和路由 · 博弈仲裁 · 分发</text>
+
+          <!-- 中心 Prefill DC -->
+          <rect x="28" y="342" width="200" height="56" rx="10" fill="#ffffff" stroke="#e08a00" stroke-width="1.5"/>
+          <text x="128" y="366" text-anchor="middle" fill="#1a1e26" font-size="14" font-weight="800">中心 Prefill DC</text>
+          <text x="128" y="386" text-anchor="middle" fill="#7a838d" font-size="11.5">生产 KV 段（源站）</text>
+
+          <!-- 区域缓存节点 -->
+          <rect x="478" y="255" width="208" height="46" rx="9" fill="#ffffff" stroke="#c7ccd4" stroke-width="1.3"/>
+          <text x="582" y="274" text-anchor="middle" fill="#1a1e26" font-size="13" font-weight="700">区域缓存节点</text>
+          <text x="582" y="292" text-anchor="middle" fill="#7a838d" font-size="11">区域驻留（区域 POP）</text>
+
+          <!-- 边缘 Decode 节点 -->
+          <rect x="478" y="388" width="208" height="46" rx="9" fill="#ffffff" stroke="#c7ccd4" stroke-width="1.3"/>
+          <text x="582" y="407" text-anchor="middle" fill="#1a1e26" font-size="13" font-weight="700">边缘 Decode 节点</text>
+          <text x="582" y="425" text-anchor="middle" fill="#7a838d" font-size="11">就近命中 + Decode（边缘）</text>
+
+          <!-- 箭头 -->
+          <line x1="325" y1="52" x2="325" y2="98" stroke="#c7000b" stroke-width="2" marker-end="url(#m1)"/>
+          <text x="336" y="80" fill="#c7000b" font-size="12">先查后连</text>
+          <line x1="395" y1="98" x2="395" y2="52" stroke="#c7000b" stroke-width="2" marker-end="url(#m1)"/>
+          <text x="406" y="80" fill="#c7000b" font-size="12">RouteGrant</text>
+
+          <path d="M295 230 C 220 270, 175 300, 152 342" fill="none" stroke="#9aa2ad" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#m2)"/>
+          <text x="150" y="292" fill="#7a838d" font-size="12">调度 / 分发</text>
+
+          <path d="M228 362 C 320 340, 410 300, 478 282" fill="none" stroke="#e08a00" stroke-width="2" marker-end="url(#m3)"/>
+          <text x="335" y="330" fill="#e08a00" font-size="12">预分发 KV 段</text>
+
+          <line x1="582" y1="301" x2="582" y2="388" stroke="#e08a00" stroke-width="2" marker-end="url(#m3)"/>
+          <text x="594" y="348" fill="#e08a00" font-size="12">下沉</text>
+
+          <path d="M650 388 C 700 240, 560 90, 452 52" fill="none" stroke="#c7000b" stroke-width="2.5" marker-end="url(#m1)"/>
+          <text x="588" y="228" fill="#c7000b" font-size="12">TokenStream（直连返回）</text>
+        </svg>
+      </div>
+      <div class="col">
+        <h3>部件 → 对标物</h3>
+        <table>
+          <tr><th>部件</th><th>职责</th><th>对标 CDN</th></tr>
+          <tr><td><b>全局路由网关</b></td><td>亲和路由 · 博弈 · 分发（<b>内置 KV 目录 + 潮汐调度器</b>）</td><td>智能 DNS</td></tr>
+          <tr><td><b>中心 Prefill DC</b></td><td>生产 KV 段 + 兜底推理</td><td>源站</td></tr>
+          <tr><td><b>区域缓存节点</b></td><td>区域驻留（三级缓存）</td><td>区域 POP</td></tr>
+          <tr><td><b>边缘 Decode 节点</b></td><td>就近命中 + Decode</td><td>边缘节点</td></tr>
+          <tr><td><b>WAN 传输加速层</b></td><td>压缩流式传输</td><td>回源链路</td></tr>
+          <tr><td><b>信任与验证引擎</b></td><td>防投毒校验</td><td>安全层</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 第 5 页 ============ -->
+<section class="slide" data-title="差异化对比">
+  <div class="head"><span class="no">06</span><h2>差异化对比 —— 我们与传统方案的本质区别</h2><span class="sub">回答「为什么不用现有方案」</span></div>
+  <div class="body">
+    <table>
+      <tr><th style="width:14%;">维度</th><th style="width:24%;">传统内容 CDN</th><th style="width:32%;">KV Cache CDN</th><th>差异含义</th></tr>
+      <tr><td>缓存对象</td><td>静态文件（图片/视频）</td><td>模型绑定张量（须匹配版本 / LoRA）</td><td>需<b>版本化一致性</b>管理</td></tr>
+      <tr><td>回源代价</td><td>仅带宽（拉文件）</td><td>昂贵算力 + 数十秒时间</td><td>命中价值高 <span class="usp">100×</span></td></tr>
+      <tr><td>匹配粒度</td><td>URL 完整匹配</td><td>前缀 / 语义块部分匹配</td><td>部分命中也有收益</td></tr>
+      <tr><td>增长特性</td><td>完整文件</td><td>增量追加（前缀复用 + 后缀生成）</td><td>需<b>流式拼接</b></td></tr>
+      <tr><td>错误影响</td><td>404 / 文件损坏</td><td>静默的生成质量劣化</td><td>需<b>校验与回退</b>机制</td></tr>
+    </table>
+    <table>
+      <tr><th style="width:20%;">维度</th><th style="width:26%;">现有推理框架<br>(vLLM / SGLang)</th><th style="width:26%;">现有分离方案<br>(Mooncake / DistServe)</th><th>我们的 KV Cache CDN</th></tr>
+      <tr><td>缓存范围</td><td>单节点 / 单集群</td><td>单数据中心集群</td><td class="usp">跨地域全局三级缓存</td></tr>
+      <tr><td>复用粒度</td><td>线性前缀</td><td>线性前缀</td><td class="usp">位置无关 + 跨模型</td></tr>
+      <tr><td>调度维度</td><td>本地排队</td><td>集群内负载均衡</td><td class="usp">全局成本×延迟×潮汐×信任</td></tr>
+      <tr><td>算力来源</td><td>自有集群</td><td>自有集群</td><td class="usp">DC 骨干 + P2P 长尾双模</td></tr>
+      <tr><td>生命周期</td><td>请求/会话级</td><td>请求级</td><td class="usp">请求→会话→跨会话→持久 四级</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ============ 第 6 页 ============ -->
+<section class="slide" data-title="总结——创新点与价值">
+  <div class="head"><span class="no">07</span><h2>总结 —— 创新点与价值</h2><span class="sub">三创新 · 三价值 · 请批资源</span></div>
+  <div class="body">
+    <div class="cards" style="grid-template-columns:repeat(3,1fr);flex:0 0 auto;">
+      <div class="card">
+        <div class="t"><span class="ic cap">①</span>缓存亲和性路由</div>
+        <div class="d"><b>是什么</b>：全局网关像智能 DNS，按「复用程度 × SLA × 成本」把每个请求调度到"已算过这份上下文"的节点，客户端直连、不经网关转发。</div>
+        <div class="d" style="margin-top:.6vh;"><b>带来什么</b>：KB 级路由决策替代 GB 级 KV 传输，跨域硬传清零；命中节点只算增量，首字延迟 10s → 1–2s。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic loc">②</span>基于不同 KV 段的统计复用与分发</div>
+        <div class="d"><b>是什么</b>：把上下文按"多少人共用"切成独立寻址的段；统计每段的命中、共享度与区域热度，把高共享段在低谷期提前分发到位。</div>
+        <div class="d" style="margin-top:.6vh;"><b>带来什么</b>：一次 Prefill 多次消费，重复计算浪费降 30–70%；预分发成本不到单次硬传的 1/13。</div>
+      </div>
+      <div class="card">
+        <div class="t"><span class="ic cost">③</span>经济与 SLA 博弈后的存算物理分离</div>
+        <div class="d"><b>是什么</b>：每次推理前实时估算"本地重算 / 跨域拉取 / 降级中心"三条路的耗时与价格，对照 SLA 择优——本节点推理，或上移中心完成。</div>
+        <div class="d" style="margin-top:.6vh;"><b>带来什么</b>：宁可重算绝不死等，恶劣网络下 SLA 仍可承诺；算存解耦，边缘可用更便宜的专用硬件。</div>
+      </div>
+    </div>
+    <div class="vals">
+      <div class="val"><span class="emoji">🧑</span><span class="vt" style="width:13ch;">最终用户（ToC）</span><span class="vd"><b>体验</b>：首字延迟 10s 级 → <b>1s 内（11×）</b>，长上下文、多轮 Agent 问答不再「等待思考」，接近本地应用的流畅度；<b>成本</b>：推理成本下降传导为普惠定价，长上下文场景单次成本降 <b>64%</b>，让用户「用得起」长上下文。</span></div>
+      <div class="val"><span class="emoji">🏢</span><span class="vt" style="width:13ch;">服务提供商（运营商）</span><span class="vd"><b>成本</b>：推理 TCO <b>−30~45%</b>——免每地域堆高配 GPU、边缘仅需低成本 Decode 硬件、低谷闲置算力变「夜间 Prefill 工厂」；<b>业务</b>：复用现有 CDN 机房与骨干专线，升级为「推理 CDN」新基础设施、面向企业 ToC 开展 MaaS；<b>质量</b>：博弈降级保障恶劣网络下 SLA 可承诺。</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 底部标题栏 -->
+<div class="footer">
+  <span id="pageTitle">封面</span>
+  <span><span class="conf">内部汇报</span> &nbsp;|&nbsp; <span class="pg" id="pageNum">1 / 7</span></span>
+</div>
+<div class="hint">← → 翻页 · 点击左右 1/3</div>
+
+<script>
+(function(){
+  var slides = document.querySelectorAll('.slide');
+  var cur = 0;
+  var titleEl = document.getElementById('pageTitle');
+  var numEl = document.getElementById('pageNum');
+  function go(i){
+    cur = ((i % slides.length) + slides.length) % slides.length;
+    slides.forEach(function(s,idx){ s.classList.toggle('active', idx===cur); });
+    numEl.textContent = (cur+1) + ' / ' + slides.length;
+    titleEl.textContent = slides[cur].getAttribute('data-title') || '';
+  }
+  document.addEventListener('keydown', function(e){
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'||e.key==='PageDown'||e.key===' '){ e.preventDefault(); go(cur+1); }
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='PageUp'){ e.preventDefault(); go(cur-1); }
+    else if(e.key==='Home'){ go(0); }
+    else if(e.key==='End'){ go(slides.length-1); }
+  });
+  document.addEventListener('click', function(e){
+    var x = e.clientX / window.innerWidth;
+    if(x > 2/3){ go(cur+1); }
+    else if(x < 1/3){ go(cur-1); }
+  });
+  go(0);
+})();
+</script>
+</body>
+</html>
